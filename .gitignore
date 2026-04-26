@@ -4,3 +4,30 @@ rpc.log
 *.a
 *.swp
 .DS_Store
+
+# CMake cache and generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+Makefile
+
+# Build directories
+out/
+dist/
+bin/
+lib/
+
+# Test and coverage artifacts
+*.gcno
+*.gcda
+*.gcov
+coverage/
+
+# Logs
+*.log
+
+# IDE/editor files
+.idea/
+.vscode/
+*.iml
