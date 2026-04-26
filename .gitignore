@@ -1,0 +1,6 @@
+build/
+rpc.log
+*.o
+*.a
+*.swp
+.DS_Store

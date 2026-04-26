@@ -1,0 +1,15 @@
+# 本机 CMake 输出：勿带入容器，否则会与 /app 路径冲突
+build
+build/
+**/build/
+
+# 杂项
+*.log
+rpc.log
+.git
+.gitignore
+.cursor
+cmake-build-*
+.cache
+*.o
+*.a
