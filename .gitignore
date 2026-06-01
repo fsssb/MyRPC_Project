@@ -1,9 +1,11 @@
 build/
+build-local/
 rpc.log
 *.o
 *.a
 *.swp
 .DS_Store
+.cursor/
 
 # CMake cache and generated files
 CMakeCache.txt
@@ -31,3 +33,6 @@ coverage/
 .idea/
 .vscode/
 *.iml
+
+# Local interview/prep notes that are not part of the public code repo
+AI应用开发工程师面试QA-自我介绍钩子.md
