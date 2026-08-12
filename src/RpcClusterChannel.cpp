@@ -2,6 +2,7 @@
 
 #include <condition_variable>
 #include <mutex>
+#include <thread>
 
 RpcClusterChannel::RpcClusterChannel(EventLoop* loop) : loop_(loop) {}
 
@@ -42,12 +43,24 @@ void RpcClusterChannel::setLoadBalancer(std::shared_ptr<LoadBalancer> lb) {
     lb_ = std::move(lb);
 }
 
+void RpcClusterChannel::setRetryOptions(const RetryOptions& options) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    retryOptions_ = options;
+    retryBudget_.reset(options.budgetTokens);
+}
+
 void RpcClusterChannel::callAsync(RpcController& controller, const Value& request,
                                   Value* response, Done done) {
+    attemptOnce(controller, request, response, std::move(done), 1);
+}
+
+void RpcClusterChannel::attemptOnce(RpcController& controller, const Value& request,
+                                    Value* response, Done done, uint32_t attempt) {
     std::vector<InstanceState> states;
     std::vector<std::shared_ptr<RpcChannel>> channels;
     std::vector<std::shared_ptr<CircuitBreaker>> breakers;
     std::shared_ptr<LoadBalancer> lb;
+    RetryOptions options;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const auto& inst : instances_) {
@@ -60,6 +73,7 @@ void RpcClusterChannel::callAsync(RpcController& controller, const Value& reques
             breakers.push_back(inst.breaker);
         }
         lb = lb_;
+        options = retryOptions_;
     }
 
     std::size_t idx = channels.size();
@@ -75,31 +89,56 @@ void RpcClusterChannel::callAsync(RpcController& controller, const Value& reques
         }
     }
 
+    auto maybeRetry = [this, &controller, &request, response, done = std::move(done),
+                       attempt, options](bool success) mutable {
+        if (success) {
+            retryBudget_.refund();
+            done();
+            return;
+        }
+        const auto st = controller.status();
+        if (retry::shouldRetry(st, controller.idempotent(), attempt, options.maxAttempts) &&
+            retryBudget_.tryConsume()) {
+            retries_.fetch_add(1, std::memory_order_relaxed);
+            const auto backoff = retry::jitterBackoff(attempt - 1, options.baseBackoffMs,
+                                                      options.maxBackoffMs);
+            auto self = shared_from_this();
+            std::thread([self, &controller, &request, response, done = std::move(done),
+                         attempt, backoff]() mutable {
+                std::this_thread::sleep_for(backoff);
+                self->attemptOnce(controller, request, response, std::move(done), attempt + 1);
+            }).detach();
+            return;  // done is deferred until the retry resolves
+        }
+        done();
+    };
+
     if (idx >= channels.size() || !states[idx].healthy) {
-        // All instances are closed or circuit-open: fail fast (the half-open
-        // probe path re-checks recovering instances without bursting them).
-        failCall(&controller, proto::kUnknown, "no available instance", std::move(done));
+        // All instances are unavailable: fail fast (retry may kick in).
+        failCall(&controller, proto::kUnknown, "no available instance",
+                 [this, maybeRetry]() mutable { maybeRetry(false); });
         return;
     }
 
     auto breaker = breakers[idx];
     if (!breaker->allowRequest()) {
         failCall(&controller, proto::kConcurrencyLimited, "circuit probe slot busy",
-                 std::move(done));
+                 [this, maybeRetry]() mutable { maybeRetry(false); });
         return;
     }
 
-    auto wrappedDone = [breaker, done = std::move(done), &controller]() {
+    auto wrappedDone = [this, &controller, breaker, maybeRetry]() mutable {
         const auto st = controller.status();
         if (st == proto::kOk) {
             breaker->onSuccess();
+            maybeRetry(true);
         } else if (st != proto::kUnknown) {
-            // Server/protocol errors count toward the breaker. Connection
-            // failures (kUnknown) are covered by isHealthy() instead: the
-            // channel auto-reconnects and rejoins without needing a probe.
             breaker->onError();
+            maybeRetry(false);
+        } else {
+            // connection-class failure; breaker is skipped (isHealthy covers it)
+            maybeRetry(false);
         }
-        done();
     };
     channels[idx]->callAsync(controller, request, response, std::move(wrappedDone));
 }
@@ -116,12 +155,11 @@ bool RpcClusterChannel::call(RpcController& controller, const Value& request, Va
     callAsync(controller, request, response, notify);
 
     std::unique_lock<std::mutex> lk(m);
-    const uint32_t waitMs = controller.timeoutMs() > 0 ? controller.timeoutMs() + 500 : 10000;
+    const uint32_t waitMs = controller.timeoutMs() > 0 ? controller.timeoutMs() + 2000 : 15000;
     cv.wait_for(lk, std::chrono::milliseconds(waitMs), [&]() { return doneCalled; });
     if (!doneCalled) {
         // The selected channel's deadline timer eventually completes the call;
-        // wait a second window so the done callback (and its stack writes)
-        // always run before we return.
+        // wait another window (retries with backoff may extend the duration).
         cv.wait_for(lk, std::chrono::milliseconds(waitMs), [&]() { return doneCalled; });
     }
     return controller.status() == proto::kOk;
