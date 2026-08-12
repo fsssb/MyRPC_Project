@@ -98,6 +98,7 @@ private:
     void sendInLoop(uint32_t id, uint32_t methodId, uint32_t timeoutMs, const std::string& body);
     void onCallTimeout(uint32_t id);
     void onHeartbeatTick();
+    void scheduleReconnect();
     void failPending(uint32_t id, proto::Status status, const std::string& text);
     void dispatchResponse(const Message& resp);
 
@@ -128,6 +129,10 @@ private:
 
     // latency EMA observed by the load balancer
     double latencyEmaMs_{0.0};
+
+    // automatic reconnect (loop thread only); disabled by stop()
+    bool reconnectEnabled_{true};
+    EventLoop::TimerId reconnectTimerId_{0};
 };
 
 #endif  // MYRPCPROJECT_INCLUDE_RPCCHANNEL_H_

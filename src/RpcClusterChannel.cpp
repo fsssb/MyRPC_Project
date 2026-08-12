@@ -18,6 +18,7 @@ void RpcClusterChannel::addInstance(const std::string& host, uint16_t port) {
     inst.channel = std::make_shared<RpcChannel>(loop_, host, port);
     inst.channel->setHeartbeatIntervalMs(5000);
     inst.channel->start();
+    inst.breaker = std::make_shared<CircuitBreaker>();
     instances_.push_back(std::move(inst));
 }
 
@@ -45,16 +46,18 @@ void RpcClusterChannel::callAsync(RpcController& controller, const Value& reques
                                   Value* response, Done done) {
     std::vector<InstanceState> states;
     std::vector<std::shared_ptr<RpcChannel>> channels;
+    std::vector<std::shared_ptr<CircuitBreaker>> breakers;
     std::shared_ptr<LoadBalancer> lb;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const auto& inst : instances_) {
             InstanceState st;
-            st.healthy = inst.channel->isHealthy();
+            st.healthy = inst.channel->isHealthy() && inst.breaker->isAvailable();
             st.inflight = inst.channel->inflightCount();
             st.latencyEmaMs = inst.channel->latencyEmaMs();
             states.push_back(st);
             channels.push_back(inst.channel);
+            breakers.push_back(inst.breaker);
         }
         lb = lb_;
     }
@@ -73,10 +76,32 @@ void RpcClusterChannel::callAsync(RpcController& controller, const Value& reques
     }
 
     if (idx >= channels.size() || !states[idx].healthy) {
-        failCall(&controller, proto::kUnknown, "no healthy instance available", std::move(done));
+        // All instances are closed or circuit-open: fail fast (the half-open
+        // probe path re-checks recovering instances without bursting them).
+        failCall(&controller, proto::kUnknown, "no available instance", std::move(done));
         return;
     }
-    channels[idx]->callAsync(controller, request, response, std::move(done));
+
+    auto breaker = breakers[idx];
+    if (!breaker->allowRequest()) {
+        failCall(&controller, proto::kConcurrencyLimited, "circuit probe slot busy",
+                 std::move(done));
+        return;
+    }
+
+    auto wrappedDone = [breaker, done = std::move(done), &controller]() {
+        const auto st = controller.status();
+        if (st == proto::kOk) {
+            breaker->onSuccess();
+        } else if (st != proto::kUnknown) {
+            // Server/protocol errors count toward the breaker. Connection
+            // failures (kUnknown) are covered by isHealthy() instead: the
+            // channel auto-reconnects and rejoins without needing a probe.
+            breaker->onError();
+        }
+        done();
+    };
+    channels[idx]->callAsync(controller, request, response, std::move(wrappedDone));
 }
 
 bool RpcClusterChannel::call(RpcController& controller, const Value& request, Value* response) {
