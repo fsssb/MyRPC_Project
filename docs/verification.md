@@ -109,7 +109,7 @@ bench.py（V2 协议）:
   demo.ai  AI 链路口径: concurrency=3, qps≈12（单请求约 250ms）
 ```
 
-Linux `EpollPoller` / ET 路径仍按 Docker 一键验收执行：
+Linux `EpollPoller` / ET 路径：本机 Docker Desktop 存在失效代理残留（`127.0.0.1:7897`，VPN 关闭后不可达）且 VM 网络异常（`no route to host`），本次**未完成**容器内 Linux epoll 验收。镜像构建与一键验收命令如下，Docker 环境正常时可复现：
 
 ```bash
 docker build --no-cache -t myrpc-epoll .
