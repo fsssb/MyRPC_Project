@@ -19,6 +19,8 @@ set(RPC_CORE_SOURCES
     src/RpcServer.cpp
     src/RpcChannel.cpp
     src/RpcClient.cpp
+    src/RpcClusterChannel.cpp
+    src/LoadBalancer.cpp
     src/AIService.cpp
     src/TaskCoordinator.cpp
     src/Metrics.cpp
@@ -59,6 +61,16 @@ add_executable(rpc_client_demo
 )
 
 target_link_libraries(rpc_client_demo
+    PRIVATE
+        rpc_core
+        Threads::Threads
+)
+
+add_executable(rpc_governance_demo
+    src/rpc_governance_demo.cpp
+)
+
+target_link_libraries(rpc_governance_demo
     PRIVATE
         rpc_core
         Threads::Threads

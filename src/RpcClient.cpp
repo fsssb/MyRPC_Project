@@ -2,6 +2,7 @@
 
 #include "EventLoop.h"
 #include "RpcChannel.h"
+#include "RpcClusterChannel.h"
 
 #include <future>
 
@@ -32,6 +33,10 @@ std::shared_ptr<RpcChannel> RpcClient::connect(const std::string& host, uint16_t
     channel->setHeartbeatIntervalMs(5000);  // 5s < server idle cleanup (30s)
     channel->start();
     return channel;
+}
+
+std::shared_ptr<RpcClusterChannel> RpcClient::createClusterChannel() {
+    return std::make_shared<RpcClusterChannel>(loop_);
 }
 
 void RpcClient::stop() {

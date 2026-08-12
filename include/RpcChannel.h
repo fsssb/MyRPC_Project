@@ -59,6 +59,11 @@ public:
     void setConnectTimeoutMs(uint32_t ms);
     uint32_t connectTimeoutMs() const { return connectTimeoutMs_; }
 
+    // --- load-balancer observation points (V2.1) ---------------------------
+    bool isHealthy() const;            // connection is Ready
+    std::size_t inflightCount() const; // active pending calls
+    double latencyEmaMs() const;       // exponential moving average of RTT
+
     // Application-level keepalive: when the connection has been idle (no
     // inbound bytes) for one interval, a heartbeat frame is sent; after two
     // consecutive heartbeats without any inbound frame the connection is
@@ -77,6 +82,7 @@ private:
         Value* response{nullptr};
         Done done;
         EventLoop::TimerId timerId{0};
+        std::chrono::steady_clock::time_point start;
     };
 
     enum class State { Idle, Connecting, Ready, Closed };
@@ -119,6 +125,9 @@ private:
     uint32_t heartbeatIntervalMs_{0};
     std::chrono::steady_clock::time_point lastReceivedAt_{std::chrono::steady_clock::now()};
     uint32_t unansweredHeartbeats_{0};
+
+    // latency EMA observed by the load balancer
+    double latencyEmaMs_{0.0};
 };
 
 #endif  // MYRPCPROJECT_INCLUDE_RPCCHANNEL_H_

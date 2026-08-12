@@ -100,6 +100,30 @@ void RpcChannel::setHeartbeatIntervalMs(uint32_t ms) {
     heartbeatIntervalMs_ = ms;
 }
 
+bool RpcChannel::isHealthy() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Connecting counts as usable: requests issued while connecting are queued
+    // in outputQueue_ and flushed by onConnected. Only a closed connection is
+    // excluded from load balancing.
+    return state_ != State::Closed;
+}
+
+std::size_t RpcChannel::inflightCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::size_t n = 0;
+    for (const auto& pc : pending_) {
+        if (pc) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+double RpcChannel::latencyEmaMs() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return latencyEmaMs_;
+}
+
 void RpcChannel::callAsync(RpcController& controller, const Value& request,
                            Value* response, Done done) {
     asyncCall(controller, request, response, std::move(done));
@@ -134,6 +158,7 @@ uint32_t RpcChannel::asyncCall(RpcController& controller, const Value& request,
     pc->ctrl = &controller;
     pc->response = response;
     pc->done = std::move(done);
+    pc->start = std::chrono::steady_clock::now();
 
     const std::string body = Serializer::encode(request);
     size_t slot = 0;
@@ -229,6 +254,16 @@ void RpcChannel::dispatchResponse(const Message& resp) {
         pc = std::move(pending_[slot]);
         pending_[slot].reset();
         freeSlots_.push(slot);
+        if (resp.header.status == proto::kOk) {
+            // Update the latency EMA observed by the load balancer.
+            const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - pc->start);
+            if (latencyEmaMs_ <= 0.0) {
+                latencyEmaMs_ = static_cast<double>(elapsedMs.count());
+            } else {
+                latencyEmaMs_ = 0.1 * static_cast<double>(elapsedMs.count()) + 0.9 * latencyEmaMs_;
+            }
+        }
     }
     pc->ctrl->setStatus(static_cast<proto::Status>(resp.header.status),
                        resp.header.status == proto::kOk ? std::string() : "rpc failed");
