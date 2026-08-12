@@ -79,3 +79,39 @@ p99_latency_ms=...
 - `src/EventLoop.cpp`
 - `EventLoop::queueInLoop`
 - `EventLoop::handleWakeupRead`
+
+## V2.0 验证记录（2026-08-12）
+
+V2.0 把 V1 的 Length-Prefix 分帧升级为 24B RPC 头（`magic/version/flags/msg_type/status/request_id/method_id/timeout_ms/body_len/reserved`），新增自研序列化、`RpcServer` 路由与 deadline、C++ 客户端 stub（单连接多路复用）与应用层心跳。
+
+本机（macOS，`PollPoller`）验证：
+
+```text
+单元验证（/tmp 独立测试程序）:
+  Serializer 编解码往返（string/int/uint/double/bool/array/map/嵌套 struct）  PASS
+  未知字段前向兼容 / 截断输入拒绝                                     PASS
+  RpcFramer 粘包拆帧 / 半包保留 / 超大包拒收 / 协议魔数不符拒收          PASS
+
+e2e（python3 scripts/rpc_e2e_client.py）:
+  单请求 demo.echo / demo.ai                    RESULT: OK
+  并发 50 乱序配对（missing=[] duplicates=False echo_mismatch=[]）  RESULT: OK
+  demo.ai timeout-ms=100 → DEADLINE_EXCEEDED(5)   RESULT: OK
+  心跳 5 个 → 全部 ack                          RESULT: OK
+  未知方法 → METHOD_NOT_FOUND(2)
+
+C++ 客户端 demo（./rpc_client_demo）:
+  并发 100/300 多路复用全对、超时 status=5、超时后连接复用          PASS
+  心跳保活（空闲 3s 后连接可用）                                      PASS
+  对端消失判死（2 心跳周期内，status=UNKNOWN，无崩溃）               PASS
+
+bench.py（V2 协议）:
+  demo.echo 网络口径: concurrency=20, qps≈4.7w, p99≈0.7ms
+  demo.ai  AI 链路口径: concurrency=3, qps≈12（单请求约 250ms）
+```
+
+Linux `EpollPoller` / ET 路径仍按 Docker 一键验收执行：
+
+```bash
+docker build --no-cache -t myrpc-epoll .
+bash ./scripts/acceptance.sh myrpc-epoll myrpc-e2e 12345
+```
