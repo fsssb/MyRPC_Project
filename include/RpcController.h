@@ -28,6 +28,11 @@ public:
     void setRequestKey(uint32_t key) { requestKey_ = key; }
     uint32_t requestKey() const { return requestKey_; }
 
+    // Idempotent calls may be retried on connection failures; non-idempotent
+    // ones fail fast (V2.1 retry policy).
+    void setIdempotent(bool idempotent) { idempotent_ = idempotent; }
+    bool idempotent() const { return idempotent_; }
+
     uint32_t methodId() const { return methodId_; }
     uint32_t timeoutMs() const { return timeoutMs_; }
     bool hasDeadline() const { return timeoutMs_ > 0; }
@@ -46,6 +51,7 @@ private:
     uint32_t methodId_{0};
     uint32_t timeoutMs_{0};
     uint32_t requestKey_{0};
+    bool idempotent_{true};  // safe default: echo-style calls are idempotent
     proto::Status status_{proto::kOk};
     std::string errorText_;
 };
