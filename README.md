@@ -26,16 +26,28 @@ MyRPCProject 是一个 C++17 实现的 RPC / 网络通信框架，用来验证 R
   - 应用层心跳：空闲 5s 发心跳，连续 2 次无 ack 判死（周期 < 服务端 30s 空闲清理阈值）。
 - Python e2e 客户端（单请求 / 并发乱序 / 超时 / 心跳四种模式）与 benchmark 脚本。
 
+**V2.1（服务治理）**
+
+- 服务端过载保护：`max_concurrency` 限并发，超限立即回 `CONCURRENCY_LIMITED`（不排队）。
+- 两阶段优雅关闭：停止接受 + 新请求回 `SHUTTING_DOWN`，等在途请求完成，超时强退。
+- 多实例集群通道 `RpcClusterChannel`：静态实例列表或注册中心发现，负载均衡分发。
+- 负载均衡：p2c（延迟 EMA × inflight）、平滑加权轮询、一致性哈希。
+- 节点级熔断 `CircuitBreaker`：10s 滑动窗口错误率 + 最小请求量防误熔断 + 半开探测恢复 + 隔离期指数退避。
+- 连接自动重连：对端恢复后自动回集群（1s 周期 + weak_ptr 防泄漏）。
+- 客户端重试：仅幂等方法、连接类错误重试、jitter 退避、集群级令牌桶防重试风暴；`DEADLINE_EXCEEDED` 与显式服务端错误不重试。
+- 注册中心 `Registry` / `LocalRegistry`：ephemeral 实例（租约过期自动移除）、一次性 watch（ZooKeeper 语义）、版本 CAS；`RpcClusterChannel::setDiscovery` 接入。
+- 新增验收 demo：`rpc_governance_demo`（多实例 LB + 故障转移）、`rpc_registry_demo`（发现 / 摘流量 / 租约过期）。
+
 ## 当前边界
 
-当前还没有实现（V2.1 / V2.2 规划）：
+当前还没有实现（V2.2 规划）：
 
-- 服务注册发现、负载均衡、熔断、限流、重试策略。
-- 请求级超时已实现（V2.0），但服务端无过载保护（max_concurrency）。
 - M:N 协程调度、零拷贝、outputBuffer 高水位背压。
 - trace_id 链路追踪、histogram 指标、`/metrics` HTTP endpoint。
 - 真实任务队列深度（`pendingTaskSize()` 仍返回 0）。
-- TLS / 鉴权。
+- 跨进程注册中心（当前 `LocalRegistry` 为进程内实现；接口已抽象，可对接 etcd / ZooKeeper）。
+- TLS / 鉴权 / 限流（QPS 维度）。
+- hedging（对冲请求）已预留 RetryPolicy 字段，未实现。
 
 ## 架构图
 
@@ -104,6 +116,21 @@ cmake --build build -j
 
 ```bash
 ./build/rpc_client_demo 100
+```
+
+服务治理 demo（需两个服务端实例）：
+
+```bash
+./build/rpc_demo 2 12345 &   # 实例 1
+./build/rpc_demo 2 12346 &   # 实例 2
+./build/rpc_governance_demo 127.0.0.1 12345 127.0.0.1 12346
+# 脚本会打印 READY_FOR_KILL，此时杀掉一个实例验证故障转移
+```
+
+注册中心 demo（发现 / 摘流量 / 租约过期，单进程自包含）：
+
+```bash
+./build/rpc_registry_demo
 ```
 
 macOS 本机构建使用 `PollPoller`。Linux `EpollPoller` / ET 路径建议用 Docker 验证（见下）。

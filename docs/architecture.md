@@ -1,8 +1,8 @@
 # 架构说明
 
-MyRPCProject 是一个 C++17 单机 RPC / 网络通信框架。V1 完成了 Reactor 网络底座（事件分发、协议分帧、异步业务、跨线程安全回写），V2.0 在此基础上补齐了 RPC 语义：24B 协议头、自研序列化、服务端路由与超时、C++ 客户端 stub（单连接多路复用）与应用层心跳。
+MyRPCProject 是一个 C++17 单机 RPC / 网络通信框架。V1 完成 Reactor 网络底座；V2.0 补齐 RPC 语义（24B 协议头、自研序列化、服务端路由与超时、C++ 客户端 stub、单连接多路复用、心跳）；V2.1 增加服务治理（服务端限流与优雅关闭、多实例负载均衡、熔断、重试、注册发现）。
 
-它不是生产级 RPC 框架。V2.1（服务治理）与 V2.2（性能 / 可观测）尚未实现。
+它不是生产级 RPC 框架。V2.2（性能 / 可观测）尚未实现。
 
 ## 组件概览
 
@@ -35,7 +35,18 @@ MyRPCProject 是一个 C++17 单机 RPC / 网络通信框架。V1 完成了 Reac
 | `Router` | `method_id → handler` 路由表（method_id = FNV-1a32("service.method")）。 |
 | `RpcClient` | 客户端入口：持有独立 `EventLoop` 线程，创建 `RpcChannel`。 |
 | `RpcChannel` | 客户端虚拟通道：单连接多路复用（request_id 槽位表 O(1) 匹配）、连接状态机、同步/异步调用、客户端 deadline、心跳保活。 |
-| `RpcController` | 单次调用上下文：method、timeout、结果 status；生命周期由调用方保证，完成时由 channel 更新。 |
+| `RpcController` | 单次调用上下文：method、timeout、幂等标记、结果 status；生命周期由调用方保证，完成时由 channel 更新。 |
+
+**V2.1（服务治理）**
+
+| 组件 | 职责 |
+| --- | --- |
+| `ConcurrencyLimiter` | 服务端原子信号量：max_concurrency 限并发，超限立即回 `CONCURRENCY_LIMITED`。 |
+| `RpcClusterChannel` | 客户端集群通道：多实例（静态列表或注册发现）+ LB 分发 + 熔断/重试包装。 |
+| `LoadBalancer` | p2c（延迟 EMA × inflight 评分）、平滑加权轮询、一致性哈希。 |
+| `CircuitBreaker` | 节点级熔断：滑动窗口错误率 + 半开探测 + 隔离期指数退避。 |
+| `RetryPolicy` | 幂等约束重试：连接类错误重试、jitter 退避、令牌桶防风暴。 |
+| `Registry` / `LocalRegistry` | 注册中心抽象与进程内实现：ephemeral 租约、一次性 watch、版本 CAS。 |
 
 ## 线程模型
 
@@ -135,18 +146,23 @@ Linux 下 wakeup pipe 两端设置为非阻塞。由于 `EpollPoller` 使用 ET�
 
 ## 当前 RPC 边界
 
-已实现（V1 底座 + V2.0）：
+已实现（V1 底座 + V2.0 + V2.1）：
 
 - Reactor 事件分发；Linux epoll ET 和 macOS poll fallback。
 - 24B RPC 头 + tag-based 序列化（`request_id` / `method_id` / `status` / `timeout_ms`）。
 - 服务端方法路由、服务端 deadline、心跳应答、状态码体系。
 - C++ 客户端 stub：单连接多路复用、乱序响应匹配、迟到响应丢弃、同步/异步 API、客户端 deadline。
 - 应用层心跳保活与对端判死。
-- 非阻塞写、定时器、空闲连接清理、优雅退出、基础指标。
+- 服务端 max_concurrency 限流、两阶段优雅关闭（`SHUTTING_DOWN` + 在途等待 + 超时强退）。
+- 多实例集群通道 + p2c/加权轮询/一致性哈希负载均衡。
+- 节点级熔断（滑动窗口 + 半开恢复）、连接自动重连。
+- 幂等约束重试（jitter 退避 + 令牌桶）。
+- 注册发现（ephemeral 租约 + 一次性 watch）。
+- 非阻塞写、定时器、空闲连接清理、基础指标。
 
 未实现（后续阶段）：
 
-- 服务注册发现、负载均衡、熔断、限流、重试策略（V2.1）。
 - M:N 协程调度、零拷贝、outputBuffer 高水位背压（V2.2）。
 - trace_id 链路追踪、histogram 指标、`/metrics` HTTP endpoint（V2.2）。
+- 跨进程注册中心（当前 LocalRegistry 进程内；接口可对接 etcd / ZooKeeper）。
 - TLS / 鉴权。

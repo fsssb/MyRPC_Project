@@ -115,3 +115,38 @@ Linux `EpollPoller` / ET 路径：本机 Docker Desktop 存在失效代理残留
 docker build --no-cache -t myrpc-epoll .
 bash ./scripts/acceptance.sh myrpc-epoll myrpc-e2e 12345
 ```
+
+## V2.1 服务治理验证记录（2026-08-13）
+
+本机（macOS，`PollPoller`）验证：
+
+```text
+阶段 A 服务端限流 + 优雅关闭:
+  max_concurrency=5，30 并发 ai 请求 → 5 OK + 25 CONCURRENCY_LIMITED(9)   PASS
+  优雅关闭：SIGINT 后新请求 SHUTTING_DOWN(8)、在途 2s 请求正常完成、进程正常退出  PASS
+  （顺带修复 V1 遗留：TcpServer::stop 异步 forceClose 与 sub loop 销毁竞态）
+
+阶段 B 多实例 LB:
+  p2c 20000 次 pick 分布 10023/9977（≈1:1）                              PASS
+  加权轮询 3:1 → 300/100                                              PASS
+  一致性哈希同 key 稳定                                               PASS
+  governance demo：2 实例 400 请求全 OK；kill 一实例后 100 请求全 OK      PASS
+
+阶段 C 熔断 + 自动重连:
+  错误注入实例：6 个错误后熔断，剩余请求全到健康实例（294 OK）            PASS
+  恢复：替换为正常实例 → 自动重连(1s) + 半开探测 → 流量恢复（200 全 OK）   PASS
+  （修复：连接失败与熔断解耦——连接类失败由 isHealthy/重连覆盖，不喂 breaker）
+
+阶段 D 重试:
+  非幂等 + 连接失败 → 快速失败（retries=0）                            PASS
+  幂等 + 连接失败 → 重试 maxAttempts-1 次（retries=2）                 PASS
+  服务端 INTERNAL_ERROR → 不重试（retries=0）                          PASS
+
+阶段 E 注册中心:
+  registry demo：发现 2 实例 → 100 请求全 OK                          PASS
+  unregister → watch 收敛到 1 实例 → 100 请求全 OK                     PASS
+  停止续租 → 租约 3s 过期 → 移除（0 实例）→ 快速失败                    PASS
+  （连续 3 次运行稳定通过）
+
+V2.0 回归：e2e 单请求/并发/心跳/超时 + rpc_client_demo 100 全绿。
+```
