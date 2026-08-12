@@ -1,6 +1,7 @@
 #ifndef MYRPCPROJECT_INCLUDE_RPCCLUSTERCHANNEL_H_
 #define MYRPCPROJECT_INCLUDE_RPCCLUSTERCHANNEL_H_
 
+#include "CircuitBreaker.h"
 #include "LoadBalancer.h"
 #include "RpcChannel.h"
 
@@ -44,6 +45,7 @@ private:
         std::string host;
         uint16_t port;
         std::shared_ptr<RpcChannel> channel;
+        std::shared_ptr<CircuitBreaker> breaker;
     };
 
     std::size_t pickInstance(uint32_t requestKey);

@@ -66,6 +66,11 @@ void RpcChannel::start() {
 
 void RpcChannel::stop() {
     loop_->runInLoop([self = shared_from_this()]() {
+        self->reconnectEnabled_ = false;
+        if (self->reconnectTimerId_ != 0) {
+            self->loop_->cancelTimer(self->reconnectTimerId_);
+            self->reconnectTimerId_ = 0;
+        }
         if (self->sockfd_ >= 0) {
             if (self->channel_) {
                 self->channel_->disableAll();
@@ -466,6 +471,25 @@ void RpcChannel::writeFrame(const RpcHeader& header, const std::string& body) {
     }
 }
 
+void RpcChannel::scheduleReconnect() {
+    if (reconnectTimerId_ != 0) {
+        loop_->cancelTimer(reconnectTimerId_);
+        reconnectTimerId_ = 0;
+    }
+    // weak capture: if the channel is destroyed while the timer is pending the
+    // callback becomes a no-op instead of keeping the channel alive.
+    reconnectTimerId_ = loop_->runAfter(std::chrono::seconds(1),
+                                        [weak = std::weak_ptr<RpcChannel>(shared_from_this())]() {
+        if (auto self = weak.lock()) {
+            self->reconnectTimerId_ = 0;
+            if (self->reconnectEnabled_ && self->state_ == State::Closed) {
+                LOG_INFO("RpcChannel: reconnecting to " + self->host_);
+                self->doConnect();
+            }
+        }
+    });
+}
+
 void RpcChannel::handleClose() {
     if (state_ == State::Closed) {
         return;
@@ -495,5 +519,9 @@ void RpcChannel::handleClose() {
                 pc->done();
             }
         }
+    }
+    // Automatic reconnect so a recovered backend rejoins the cluster.
+    if (reconnectEnabled_) {
+        scheduleReconnect();
     }
 }
