@@ -17,6 +17,8 @@ set(RPC_CORE_SOURCES
     src/Serializer.cpp
     src/RpcFramer.cpp
     src/RpcServer.cpp
+    src/RpcChannel.cpp
+    src/RpcClient.cpp
     src/AIService.cpp
     src/TaskCoordinator.cpp
     src/Metrics.cpp
@@ -47,6 +49,16 @@ add_executable(rpc_demo
 )
 
 target_link_libraries(rpc_demo
+    PRIVATE
+        rpc_core
+        Threads::Threads
+)
+
+add_executable(rpc_client_demo
+    src/rpc_client_demo.cpp
+)
+
+target_link_libraries(rpc_client_demo
     PRIVATE
         rpc_core
         Threads::Threads
