@@ -1,6 +1,7 @@
 #include "RpcServer.h"
 
 #include "EventLoop.h"
+#include "Metrics.h"
 #include "TcpConnection.h"
 
 #include <chrono>
@@ -78,6 +79,7 @@ void RpcServer::onMessage(const std::shared_ptr<TcpConnection>& conn, const Mess
         }
         case proto::kMsgRequest:
         case proto::kMsgOneway:
+            Metrics::instance().markRequest();
             break;
         default:
             return;  // ignore unexpected frame types
