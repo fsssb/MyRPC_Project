@@ -24,6 +24,10 @@ public:
     // Total RPC timeout in milliseconds; 0 means no deadline (not recommended).
     void setTimeoutMs(uint32_t ms) { timeoutMs_ = ms; }
 
+    // Optional routing key for hash-based load balancers (V2.1).
+    void setRequestKey(uint32_t key) { requestKey_ = key; }
+    uint32_t requestKey() const { return requestKey_; }
+
     uint32_t methodId() const { return methodId_; }
     uint32_t timeoutMs() const { return timeoutMs_; }
     bool hasDeadline() const { return timeoutMs_ > 0; }
@@ -41,6 +45,7 @@ private:
     std::string methodKey_;
     uint32_t methodId_{0};
     uint32_t timeoutMs_{0};
+    uint32_t requestKey_{0};
     proto::Status status_{proto::kOk};
     std::string errorText_;
 };
