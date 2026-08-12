@@ -16,6 +16,7 @@ set(RPC_CORE_SOURCES
     src/EventLoop.cpp
     src/Serializer.cpp
     src/RpcFramer.cpp
+    src/RpcServer.cpp
     src/AIService.cpp
     src/TaskCoordinator.cpp
     src/Metrics.cpp
