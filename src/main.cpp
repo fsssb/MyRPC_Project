@@ -39,10 +39,14 @@ int main(int argc, char* argv[]) {
         Metrics::instance().markRequest();
         const auto weakConn = std::weak_ptr<TcpConnection>(conn);
         auto prompt = req.body;
-        server.submitTask([&aiService, weakConn, prompt = std::move(prompt)]() mutable {
-            aiService.inferAsync(std::move(prompt), [weakConn](std::string respText) {
+        auto respHeader = req.header;
+        respHeader.msgType = proto::kMsgResponse;
+        respHeader.status = proto::kOk;
+        server.submitTask([&aiService, weakConn, prompt = std::move(prompt), respHeader]() mutable {
+            aiService.inferAsync(std::move(prompt), [weakConn, respHeader](std::string respText) {
                 if (const auto locked = weakConn.lock()) {
                     Message resp;
+                    resp.header = respHeader;
                     resp.body = std::move(respText);
                     locked->sendMessage(resp);
                 }
