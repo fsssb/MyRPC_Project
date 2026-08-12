@@ -3,6 +3,7 @@
 
 #include "CircuitBreaker.h"
 #include "LoadBalancer.h"
+#include "RetryPolicy.h"
 #include "RpcChannel.h"
 
 #include <cstdint>
@@ -35,6 +36,14 @@ public:
 
     void setLoadBalancer(std::shared_ptr<LoadBalancer> lb);
 
+    // Retry configuration: max attempts, cluster-wide retry budget and
+    // backoff limits. Defaults are RetryOptions{}.
+    void setRetryOptions(const RetryOptions& options);
+
+    // Number of retries performed (attempts beyond the first), for
+    // observability / acceptance checks.
+    uint32_t retryCount() const { return retries_.load(std::memory_order_relaxed); }
+
     // Async / sync calls, forwarded to one instance through the balancer.
     void callAsync(RpcController& controller, const Value& request,
                    Value* response, Done done);
@@ -48,6 +57,8 @@ private:
         std::shared_ptr<CircuitBreaker> breaker;
     };
 
+    void attemptOnce(RpcController& controller, const Value& request,
+                     Value* response, Done done, uint32_t attempt);
     std::size_t pickInstance(uint32_t requestKey);
     void failCall(RpcController* controller, proto::Status status,
                   const std::string& text, Done done);
@@ -57,6 +68,9 @@ private:
     mutable std::mutex mutex_;
     std::vector<Instance> instances_;
     std::shared_ptr<LoadBalancer> lb_;
+    RetryOptions retryOptions_;
+    RetryBudget retryBudget_{10};
+    std::atomic<uint32_t> retries_{0};
 };
 
 #endif  // MYRPCPROJECT_INCLUDE_RPCCLUSTERCHANNEL_H_
