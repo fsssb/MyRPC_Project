@@ -49,6 +49,65 @@ void RpcClusterChannel::setRetryOptions(const RetryOptions& options) {
     retryBudget_.reset(options.budgetTokens);
 }
 
+void RpcClusterChannel::setDiscovery(Registry* registry, const std::string& service) {
+    discoveryRegistry_ = registry;
+    discoveryService_ = service;
+    applyInstances(registry->lookup(service));
+    resubscribeWatch();
+}
+
+void RpcClusterChannel::resubscribeWatch() {
+    if (discoveryRegistry_ == nullptr) {
+        return;
+    }
+    auto self = shared_from_this();
+    discoveryRegistry_->watch(discoveryService_, [self]() {
+        self->applyInstances(self->discoveryRegistry_->lookup(self->discoveryService_));
+        self->resubscribeWatch();  // one-shot watch: subscribe again
+    });
+}
+
+void RpcClusterChannel::applyInstances(const std::vector<InstanceInfo>& infos) {
+    std::vector<std::shared_ptr<RpcChannel>> removed;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<Instance> next;
+        next.reserve(infos.size());
+        for (const auto& info : infos) {
+            auto it = std::find_if(instances_.begin(), instances_.end(),
+                                   [&](const Instance& inst) {
+                                       return inst.host == info.host && inst.port == info.port;
+                                   });
+            if (it != instances_.end()) {
+                next.push_back(*it);  // reuse channel + breaker (copy: shared_ptr)
+            } else {
+                Instance inst;
+                inst.host = info.host;
+                inst.port = info.port;
+                inst.channel = std::make_shared<RpcChannel>(loop_, info.host, info.port);
+                inst.channel->setHeartbeatIntervalMs(5000);
+                inst.channel->start();
+                inst.breaker = std::make_shared<CircuitBreaker>();
+                next.push_back(std::move(inst));
+            }
+        }
+        // Instances that disappeared are stopped outside the lock.
+        for (auto& inst : instances_) {
+            const bool keep = std::any_of(infos.begin(), infos.end(),
+                                          [&](const InstanceInfo& info) {
+                                              return info.host == inst.host && info.port == inst.port;
+                                          });
+            if (!keep) {
+                removed.push_back(inst.channel);
+            }
+        }
+        instances_.swap(next);
+    }
+    for (auto& ch : removed) {
+        ch->stop();
+    }
+}
+
 void RpcClusterChannel::callAsync(RpcController& controller, const Value& request,
                                   Value* response, Done done) {
     attemptOnce(controller, request, response, std::move(done), 1);

@@ -3,6 +3,7 @@
 
 #include "CircuitBreaker.h"
 #include "LoadBalancer.h"
+#include "Registry.h"
 #include "RetryPolicy.h"
 #include "RpcChannel.h"
 
@@ -36,6 +37,11 @@ public:
 
     void setLoadBalancer(std::shared_ptr<LoadBalancer> lb);
 
+    // Switch the instance list to service discovery: the initial set comes
+    // from registry->lookup(service), then one-shot watches keep it in sync
+    // (instances added/removed/re-expired are applied incrementally).
+    void setDiscovery(Registry* registry, const std::string& service);
+
     // Retry configuration: max attempts, cluster-wide retry budget and
     // backoff limits. Defaults are RetryOptions{}.
     void setRetryOptions(const RetryOptions& options);
@@ -62,6 +68,8 @@ private:
     std::size_t pickInstance(uint32_t requestKey);
     void failCall(RpcController* controller, proto::Status status,
                   const std::string& text, Done done);
+    void applyInstances(const std::vector<InstanceInfo>& infos);
+    void resubscribeWatch();
 
 private:
     EventLoop* loop_;
@@ -71,6 +79,8 @@ private:
     RetryOptions retryOptions_;
     RetryBudget retryBudget_{10};
     std::atomic<uint32_t> retries_{0};
+    Registry* discoveryRegistry_{nullptr};  // owned by the caller
+    std::string discoveryService_;
 };
 
 #endif  // MYRPCPROJECT_INCLUDE_RPCCLUSTERCHANNEL_H_
