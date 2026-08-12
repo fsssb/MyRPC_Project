@@ -1,9 +1,8 @@
 #include "AIService.h"
 #include "EventLoop.h"
 #include "Logger.h"
-#include "Message.h"
 #include "Metrics.h"
-#include "TcpServer.h"
+#include "RpcServer.h"
 
 #include <atomic>
 #include <chrono>
@@ -34,25 +33,31 @@ int main(int argc, char* argv[]) {
     EventLoop mainLoop;
     const std::size_t aiWorkers = static_cast<std::size_t>(threadNum <= 0 ? 8 : threadNum * 4);
     AIService aiService(aiWorkers);
-    TcpServer server(&mainLoop, "0.0.0.0", 12345, threadNum);
-    server.setMessageCallback([&aiService, &server](const std::shared_ptr<TcpConnection>& conn, const Message& req) {
-        Metrics::instance().markRequest();
-        const auto weakConn = std::weak_ptr<TcpConnection>(conn);
-        auto prompt = req.body;
-        auto respHeader = req.header;
-        respHeader.msgType = proto::kMsgResponse;
-        respHeader.status = proto::kOk;
-        server.submitTask([&aiService, weakConn, prompt = std::move(prompt), respHeader]() mutable {
-            aiService.inferAsync(std::move(prompt), [weakConn, respHeader](std::string respText) {
-                if (const auto locked = weakConn.lock()) {
-                    Message resp;
-                    resp.header = respHeader;
-                    resp.body = std::move(respText);
-                    locked->sendMessage(resp);
-                }
-            });
+    RpcServer server(&mainLoop, "0.0.0.0", 12345, threadNum);
+
+    // demo.echo: reply with the exact request struct.
+    server.registerMethod("demo", "echo", [](const Value& request, Value* response,
+                                             Router::Done done) {
+        *response = request;
+        done(proto::kOk);
+    });
+
+    // demo.ai: simulated long-running AI task; the handler completes
+    // asynchronously, exercising the cross-thread write-back path.
+    server.registerMethod("demo", "ai", [&aiService](const Value& request, Value* response,
+                                                     Router::Done done) {
+        std::string prompt;
+        if (const Value* field = request.find(1)) {
+            if (field->type() == Value::Type::String) {
+                prompt = field->asString();
+            }
+        }
+        aiService.inferAsync(std::move(prompt), [response, done](std::string result) mutable {
+            *response = Value::makeString(std::move(result));
+            done(proto::kOk);
         });
     });
+
     server.start();
 
     mainLoop.runEvery(std::chrono::seconds(1), [&server]() {
@@ -68,7 +73,7 @@ int main(int argc, char* argv[]) {
         }
     });
 
-    LOG_INFO("AI gateway started on 0.0.0.0:12345, worker threads=" + std::to_string(threadNum) +
+    LOG_INFO("RPC server started on 0.0.0.0:12345, io_threads=" + std::to_string(threadNum) +
              ", ai_workers=" + std::to_string(aiWorkers));
     mainLoop.loop();
     aiService.stop();

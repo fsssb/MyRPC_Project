@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <cstring>
 
-// V2.0 wire protocol: a 20-byte fixed header (network byte order) followed by
+// V2.0 wire protocol: a 24-byte fixed header (network byte order) followed by
 // the serialized body. This is the V1 Length-Prefix framing upgraded to carry
 // RPC semantics (see docs/v2-design-draft.md section 1.2).
 //
@@ -18,10 +18,13 @@
 //   byte  5-6    status      u16   0 for requests; error code in responses
 //   byte  7-10   request_id  u32   correlation id, echoed back by the server
 //   byte 11-14   method_id   u32   FNV-1a32(service.method) for fast routing
-//   byte 15-18   body_len    u32   serialized body bytes (excluding the 20B header)
-//   byte 19     reserved    u8    reserved for future protocol extensions
+//   byte 15-18   timeout_ms  u32   client RPC deadline in ms; 0 means no deadline
+//   byte 19-22   body_len    u32   serialized body bytes (excluding the 24B header)
+//   byte 23     reserved    u8    reserved for future protocol extensions
 //
-// body_len semantics: bytes of the serialized body, the 20-byte header excluded.
+// body_len semantics: bytes of the serialized body, the header excluded. The
+// server uses timeout_ms to fail requests that exceed their deadline with
+// kDeadlineExceeded (client-side late responses are dropped by request_id).
 
 struct RpcHeader {
     uint16_t magic{0};
@@ -31,6 +34,7 @@ struct RpcHeader {
     uint16_t status{0};
     uint32_t requestId{0};
     uint32_t methodId{0};
+    uint32_t timeoutMs{0};
     uint32_t bodyLen{0};
     uint8_t reserved{0};
 };
@@ -39,7 +43,7 @@ namespace proto {
 
 constexpr uint16_t kMagic = 0x4D50;
 constexpr uint8_t kVersion = 1;
-constexpr std::size_t kHeaderSize = 20;
+constexpr std::size_t kHeaderSize = 24;
 constexpr uint32_t kMaxBodyLen = 64 * 1024 * 1024;  // 64 MiB; larger frames are rejected
 
 // Message types.
@@ -85,12 +89,13 @@ inline uint32_t methodIdOf(const char* methodKey) {
     return fnv1a32(methodKey, std::strlen(methodKey));
 }
 
-// Encode the header into a 20-byte buffer (network byte order).
+// Encode the header into a 24-byte buffer (network byte order).
 inline void encodeHeader(const RpcHeader& h, char* out) {
     uint16_t magic = htons(h.magic);
     uint16_t status = htons(h.status);
     uint32_t requestId = htonl(h.requestId);
     uint32_t methodId = htonl(h.methodId);
+    uint32_t timeoutMs = htonl(h.timeoutMs);
     uint32_t bodyLen = htonl(h.bodyLen);
     std::memcpy(out, &magic, 2);
     out[2] = h.version;
@@ -99,23 +104,26 @@ inline void encodeHeader(const RpcHeader& h, char* out) {
     std::memcpy(out + 5, &status, 2);
     std::memcpy(out + 7, &requestId, 4);
     std::memcpy(out + 11, &methodId, 4);
-    std::memcpy(out + 15, &bodyLen, 4);
-    out[19] = h.reserved;
+    std::memcpy(out + 15, &timeoutMs, 4);
+    std::memcpy(out + 19, &bodyLen, 4);
+    out[23] = h.reserved;
 }
 
-// Decode a 20-byte buffer into host byte order. Returns false when the magic or
+// Decode a 24-byte buffer into host byte order. Returns false when the magic or
 // version does not match this protocol.
 inline bool decodeHeader(const char* in, RpcHeader* h) {
     uint16_t magic = 0;
     uint16_t status = 0;
     uint32_t requestId = 0;
     uint32_t methodId = 0;
+    uint32_t timeoutMs = 0;
     uint32_t bodyLen = 0;
     std::memcpy(&magic, in, 2);
     std::memcpy(&status, in + 5, 2);
     std::memcpy(&requestId, in + 7, 4);
     std::memcpy(&methodId, in + 11, 4);
-    std::memcpy(&bodyLen, in + 15, 4);
+    std::memcpy(&timeoutMs, in + 15, 4);
+    std::memcpy(&bodyLen, in + 19, 4);
     h->magic = ntohs(magic);
     h->version = in[2];
     h->flags = in[3];
@@ -123,8 +131,9 @@ inline bool decodeHeader(const char* in, RpcHeader* h) {
     h->status = ntohs(status);
     h->requestId = ntohl(requestId);
     h->methodId = ntohl(methodId);
+    h->timeoutMs = ntohl(timeoutMs);
     h->bodyLen = ntohl(bodyLen);
-    h->reserved = in[19];
+    h->reserved = in[23];
     return h->magic == kMagic && h->version == kVersion;
 }
 
