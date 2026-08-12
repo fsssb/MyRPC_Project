@@ -4,9 +4,15 @@
 ARG BASE_IMAGE=public.ecr.aws/ubuntu/ubuntu:22.04
 FROM ${BASE_IMAGE}
 
+# Clear HTTP proxy variables injected by the host (e.g. a stale VPN/proxy port
+# like 127.0.0.1:7897). Harmless when the host has no proxy configured.
+ENV http_proxy="" https_proxy="" HTTP_PROXY="" HTTPS_PROXY="" ALL_PROXY="" all_proxy=""
+
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# -o Acquire::*::Proxy="" forces apt to ignore any host-injected proxy config.
+RUN apt-get -o Acquire::http::Proxy="" -o Acquire::https::Proxy="" update \
+    && apt-get -o Acquire::http::Proxy="" -o Acquire::https::Proxy="" install -y --no-install-recommends \
     build-essential \
     cmake \
     g++ \

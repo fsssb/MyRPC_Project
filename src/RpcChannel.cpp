@@ -25,7 +25,35 @@ RpcChannel::RpcChannel(EventLoop* loop, std::string host, uint16_t port)
       inputBuffer_(std::make_shared<Buffer>()) {}
 
 RpcChannel::~RpcChannel() {
-    stop();
+    // shared_from_this() is unavailable during destruction, so do a
+    // synchronous close instead of stop()'s loop-thread dispatch. Callers
+    // should stop() the channel (or the owning RpcClient) before releasing the
+    // last reference; a channel already dead (heartbeat / peer close) makes
+    // this path a no-op.
+    int fd = -1;
+    std::vector<std::unique_ptr<PendingCall>> doomed;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = State::Closed;
+        fd = sockfd_;
+        sockfd_ = -1;
+        doomed.swap(pending_);
+        std::queue<size_t> empty;
+        freeSlots_.swap(empty);
+    }
+    if (fd >= 0 && channel_) {
+        channel_->disableAll();
+    }
+    if (fd >= 0) {
+        ::close(fd);
+    }
+    channel_.reset();
+    for (auto& pc : doomed) {
+        if (pc && pc->done) {
+            pc->ctrl->setStatus(proto::kUnknown, "channel destroyed");
+            pc->done();
+        }
+    }
 }
 
 void RpcChannel::start() {
@@ -39,7 +67,10 @@ void RpcChannel::start() {
 void RpcChannel::stop() {
     loop_->runInLoop([self = shared_from_this()]() {
         if (self->sockfd_ >= 0) {
-            self->channel_->disableAll();
+            if (self->channel_) {
+                self->channel_->disableAll();
+                self->loop_->removeChannel(self->channel_.get());
+            }
             ::close(self->sockfd_);
             self->sockfd_ = -1;
         }
@@ -49,6 +80,8 @@ void RpcChannel::stop() {
             std::lock_guard<std::mutex> lock(self->mutex_);
             self->state_ = State::Closed;
             doomed.swap(self->pending_);
+            std::queue<size_t> empty;
+            self->freeSlots_.swap(empty);  // slots no longer valid
         }
         for (auto& pc : doomed) {
             if (pc && pc->done) {
@@ -61,6 +94,10 @@ void RpcChannel::stop() {
 
 void RpcChannel::setConnectTimeoutMs(uint32_t ms) {
     connectTimeoutMs_ = ms;
+}
+
+void RpcChannel::setHeartbeatIntervalMs(uint32_t ms) {
+    heartbeatIntervalMs_ = ms;
 }
 
 void RpcChannel::callAsync(RpcController& controller, const Value& request,
@@ -102,6 +139,13 @@ uint32_t RpcChannel::asyncCall(RpcController& controller, const Value& request,
     size_t slot = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ == State::Closed) {
+            // The channel is gone (peer died / stopped): fail the call right
+            // away instead of touching the (now empty) pending table.
+            pc->ctrl->setStatus(proto::kUnknown, "channel closed");
+            pc->done();
+            return 0;
+        }
         if (freeSlots_.empty()) {
             slot = pending_.size();
             pending_.push_back(nullptr);
@@ -269,10 +313,39 @@ void RpcChannel::onConnected() {
     channel_->setCloseCallback([self = shared_from_this()]() { self->handleClose(); });
     channel_->setErrorCallback([self = shared_from_this()]() { self->handleClose(); });
     channel_->enableReading();
+    lastReceivedAt_ = std::chrono::steady_clock::now();
+    unansweredHeartbeats_ = 0;
+    if (heartbeatIntervalMs_ > 0) {
+        loop_->runEvery(std::chrono::milliseconds(heartbeatIntervalMs_),
+                        [self = shared_from_this()]() { self->onHeartbeatTick(); });
+    }
     flushOutput();
 }
 
+void RpcChannel::onHeartbeatTick() {
+    if (state_ != State::Ready) {
+        return;
+    }
+    const auto idleMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - lastReceivedAt_);
+    if (idleMs.count() < static_cast<int64_t>(heartbeatIntervalMs_)) {
+        return;  // recent inbound traffic, no heartbeat needed
+    }
+    if (unansweredHeartbeats_ >= 2) {
+        LOG_ERROR("RpcChannel: peer dead (no heartbeat ack for " + host_);
+        handleClose();
+        return;
+    }
+    ++unansweredHeartbeats_;
+    RpcHeader h;
+    h.msgType = proto::kMsgHeartbeat;
+    h.requestId = 0;
+    writeFrame(h, std::string());
+}
+
 void RpcChannel::handleRead() {
+    lastReceivedAt_ = std::chrono::steady_clock::now();
+    unansweredHeartbeats_ = 0;
     char buf[4096];
     for (;;) {
         const ssize_t n = ::read(sockfd_, buf, sizeof(buf));
@@ -321,15 +394,19 @@ void RpcChannel::sendInLoop(uint32_t id, uint32_t methodId, uint32_t timeoutMs,
         failPending(id, proto::kUnknown, "channel closed before send");
         return;
     }
-    Message req;
-    req.header.magic = proto::kMagic;
-    req.header.version = proto::kVersion;
-    req.header.msgType = proto::kMsgRequest;
-    req.header.requestId = id;
-    req.header.methodId = methodId;
-    req.header.timeoutMs = timeoutMs;
-    req.body = body;
-    const std::string frame = RpcFramer::encode(req);
+    RpcHeader header;
+    header.msgType = proto::kMsgRequest;
+    header.requestId = id;
+    header.methodId = methodId;
+    header.timeoutMs = timeoutMs;
+    writeFrame(header, body);
+}
+
+void RpcChannel::writeFrame(const RpcHeader& header, const std::string& body) {
+    Message msg;
+    msg.header = header;
+    msg.body = body;
+    const std::string frame = RpcFramer::encode(msg);
 
     if (state_ != State::Ready) {
         outputQueue_ += frame;  // flushed by onConnected
@@ -362,6 +439,7 @@ void RpcChannel::handleClose() {
     if (sockfd_ >= 0) {
         if (channel_) {
             channel_->disableAll();
+            loop_->removeChannel(channel_.get());  // poller must forget the fd
         }
         ::close(sockfd_);
         sockfd_ = -1;
@@ -372,6 +450,8 @@ void RpcChannel::handleClose() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         doomed.swap(pending_);
+        std::queue<size_t> empty;
+        freeSlots_.swap(empty);  // slots no longer valid
     }
     for (auto& pc : doomed) {
         if (pc) {

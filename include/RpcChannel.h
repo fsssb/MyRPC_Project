@@ -59,6 +59,14 @@ public:
     void setConnectTimeoutMs(uint32_t ms);
     uint32_t connectTimeoutMs() const { return connectTimeoutMs_; }
 
+    // Application-level keepalive: when the connection has been idle (no
+    // inbound bytes) for one interval, a heartbeat frame is sent; after two
+    // consecutive heartbeats without any inbound frame the connection is
+    // declared dead and closed (period must stay below the server idle
+    // cleanup timeout, e.g. 5s vs 30s). 0 disables heartbeats.
+    void setHeartbeatIntervalMs(uint32_t ms);
+    uint32_t heartbeatIntervalMs() const { return heartbeatIntervalMs_; }
+
 private:
     struct PendingCall {
         uint32_t id{0};
@@ -80,8 +88,10 @@ private:
     void handleClose();
     void onConnected();
     void flushOutput();
+    void writeFrame(const RpcHeader& header, const std::string& body);
     void sendInLoop(uint32_t id, uint32_t methodId, uint32_t timeoutMs, const std::string& body);
     void onCallTimeout(uint32_t id);
+    void onHeartbeatTick();
     void failPending(uint32_t id, proto::Status status, const std::string& text);
     void dispatchResponse(const Message& resp);
 
@@ -104,6 +114,11 @@ private:
     std::queue<size_t> freeSlots_;
     uint32_t connectTimeoutMs_{200};
     std::string outputQueue_;  // frames queued before the connection is ready
+
+    // heartbeat state (loop thread only)
+    uint32_t heartbeatIntervalMs_{0};
+    std::chrono::steady_clock::time_point lastReceivedAt_{std::chrono::steady_clock::now()};
+    uint32_t unansweredHeartbeats_{0};
 };
 
 #endif  // MYRPCPROJECT_INCLUDE_RPCCHANNEL_H_
