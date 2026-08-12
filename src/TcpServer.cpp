@@ -7,6 +7,7 @@
 #include "ThreadPool.h"
 
 #include <chrono>
+#include <future>
 #include <netinet/in.h>
 #include <string>
 
@@ -39,20 +40,43 @@ void TcpServer::stop() {
         return;
     }
 
-    loop_->runInLoop([this]() {
-        if (idleCheckTimerId_ != 0) {
-            loop_->cancelTimer(idleCheckTimerId_);
-            idleCheckTimerId_ = 0;
-        }
-
-        acceptor_->stop();
-        for (auto& item : connections_) {
-            item.second->forceClose();
-        }
-        connections_.clear();
-    });
+    // Close all connections on the main loop first and wait for it, so the
+    // connection loops are still alive when forceClose() dispatches to them.
+    // (Previously the runInLoop was fire-and-forget while threadPool_->stop()
+    // destroyed the sub EventLoops, leading to use-after-free on shutdown.)
+    if (loop_->isInLoopThread()) {
+        stopInLoop();
+    } else {
+        std::promise<void> done;
+        auto future = done.get_future();
+        loop_->runInLoop([this, &done]() {
+            stopInLoop();
+            done.set_value();
+        });
+        future.wait();
+    }
 
     threadPool_->stop();
+}
+
+void TcpServer::stopInLoop() {
+    stopping_.store(true);  // removeConnection stops dispatching (loop teardown)
+    if (idleCheckTimerId_ != 0) {
+        loop_->cancelTimer(idleCheckTimerId_);
+        idleCheckTimerId_ = 0;
+    }
+
+    acceptor_->stop();
+    for (auto& item : connections_) {
+        item.second->forceClose();
+    }
+    connections_.clear();
+}
+
+void TcpServer::stopAccepting() {
+    loop_->runInLoop([this]() {
+        acceptor_->stop();
+    });
 }
 
 void TcpServer::setConnectionCallback(ConnectionCallback cb) {
@@ -98,6 +122,12 @@ void TcpServer::newConnection(int sockfd, const sockaddr_in& /*peerAddr*/) {
 }
 
 void TcpServer::removeConnection(const std::shared_ptr<TcpConnection>& conn) {
+    // During shutdown stopInLoop already cleared the connection map and the
+    // sub loops are about to be torn down; dispatching removeConnectionInLoop
+    // would touch a destroyed EventLoop afterwards.
+    if (stopping_.load()) {
+        return;
+    }
     loop_->runInLoop([this, conn]() {
         removeConnectionInLoop(conn);
     });
