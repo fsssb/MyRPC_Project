@@ -101,6 +101,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::printf("CLIENT DEMO PASSED\n");
+    channel->stop();
     client.stop();
     return 0;
 }
