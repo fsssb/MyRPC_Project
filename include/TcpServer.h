@@ -30,6 +30,9 @@ public:
 
     void start();
     void stop();
+    // Stop accepting new connections while keeping existing ones alive
+    // (used by graceful shutdown: drain in-flight requests before closing).
+    void stopAccepting();
     void setConnectionCallback(ConnectionCallback cb);
     void setMessageCallback(MessageCallback cb);
     void submitTask(ThreadPool::Task task);
@@ -40,6 +43,7 @@ private:
     void removeConnection(const std::shared_ptr<TcpConnection>& conn);
     void removeConnectionInLoop(const std::shared_ptr<TcpConnection>& conn);
     void checkIdleConnections();
+    void stopInLoop();
 
 private:
     EventLoop* loop_;
@@ -52,6 +56,7 @@ private:
     MessageCallback messageCallback_;
     EventLoop::TimerId idleCheckTimerId_{0};
     const std::chrono::seconds idleTimeout_{30};
+    std::atomic<bool> stopping_{false};
 };
 
 #endif  // MYRPCPROJECT_INCLUDE_TCPSERVER_H_

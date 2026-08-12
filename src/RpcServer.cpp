@@ -4,6 +4,7 @@
 #include "TcpConnection.h"
 
 #include <chrono>
+#include <thread>
 #include <utility>
 
 RpcServer::RpcServer(EventLoop* loop, const std::string& ip, uint16_t port, int threadNum)
@@ -30,8 +31,39 @@ void RpcServer::stop() {
     tcpServer_.stop();
 }
 
+void RpcServer::setMaxConcurrency(std::size_t n) {
+    limiter_ = std::make_unique<ConcurrencyLimiter>(n);
+}
+
+void RpcServer::stopGracefully(std::chrono::milliseconds timeout, std::function<void()> onDone) {
+    stopping_.store(true);
+    tcpServer_.stopAccepting();
+    LOG_INFO("RpcServer: graceful shutdown, waiting for in-flight requests");
+    std::thread([this, timeout, onDone = std::move(onDone)]() {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (inflight_.load() > 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (inflight_.load() > 0) {
+            LOG_ERROR("RpcServer: graceful shutdown timed out with " +
+                      std::to_string(inflight_.load()) + " in-flight requests");
+        }
+        tcpServer_.stop();
+        if (onDone) {
+            onDone();
+        }
+    }).detach();
+}
+
 std::size_t RpcServer::pendingTaskSize() const {
     return tcpServer_.pendingTaskSize();
+}
+
+void RpcServer::releaseSlot() {
+    if (limiter_) {
+        limiter_->release();
+    }
+    inflight_.fetch_sub(1, std::memory_order_relaxed);
 }
 
 void RpcServer::onMessage(const std::shared_ptr<TcpConnection>& conn, const Message& req) {
@@ -51,6 +83,15 @@ void RpcServer::onMessage(const std::shared_ptr<TcpConnection>& conn, const Mess
             return;  // ignore unexpected frame types
     }
 
+    // Graceful shutdown: reject new requests immediately (without touching the
+    // executor, which may be busy draining in-flight work).
+    if (stopping_.load()) {
+        auto ctx = std::make_shared<RequestContext>();
+        ctx->header = req.header;
+        sendResponse(conn, ctx, proto::kShuttingDown);
+        return;
+    }
+
     // Keep handlers off the I/O threads; the default executor is the TcpServer
     // task queue (main loop pending functors), same as the V1 demo.
     std::function<void(std::function<void()>)> dispatch = executor_;
@@ -66,9 +107,22 @@ void RpcServer::handleRequest(const std::shared_ptr<TcpConnection>& conn, const 
     ctx->header = req.header;
     ctx->start = std::chrono::steady_clock::now();
 
+    if (stopping_.load()) {
+        sendResponse(conn, ctx, proto::kShuttingDown);
+        return;
+    }
+    if (limiter_ && !limiter_->tryAcquire()) {
+        LOG_INFO("RpcServer: concurrency limited, rejecting method_id=" +
+                 std::to_string(req.header.methodId));
+        sendResponse(conn, ctx, proto::kConcurrencyLimited);
+        return;
+    }
+    inflight_.fetch_add(1, std::memory_order_relaxed);
+
     if (!req.body.empty()) {
         if (!Serializer::decode(req.body, &ctx->request)) {
             LOG_ERROR("RpcServer: serialization error for method_id=" + std::to_string(req.header.methodId));
+            releaseSlot();
             sendResponse(conn, ctx, proto::kSerializationError);
             return;
         }
@@ -77,14 +131,16 @@ void RpcServer::handleRequest(const std::shared_ptr<TcpConnection>& conn, const 
     Router::Handler handler;
     if (!router_.find(req.header.methodId, &handler)) {
         LOG_ERROR("RpcServer: method not found: id=" + std::to_string(req.header.methodId));
+        releaseSlot();
         sendResponse(conn, ctx, proto::kMethodNotFound);
         return;
     }
 
     const bool reply = req.header.msgType != proto::kMsgOneway;
     const auto weakConn = std::weak_ptr<TcpConnection>(conn);
+    const auto server = this;
     handler(ctx->request, &ctx->response,
-            [weakConn, ctx, reply](proto::Status status) {
+            [server, weakConn, ctx, reply](proto::Status status) {
                 // Server-side deadline: the handler exceeded the client's
                 // timeout, so the response would arrive too late.
                 if (ctx->header.timeoutMs > 0) {
@@ -94,6 +150,7 @@ void RpcServer::handleRequest(const std::shared_ptr<TcpConnection>& conn, const 
                         status = proto::kDeadlineExceeded;
                     }
                 }
+                server->releaseSlot();
                 if (!reply) {
                     return;  // oneway calls never receive a response
                 }

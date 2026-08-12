@@ -1,11 +1,13 @@
 #ifndef MYRPCPROJECT_INCLUDE_RPCSERVER_H_
 #define MYRPCPROJECT_INCLUDE_RPCSERVER_H_
 
+#include "ConcurrencyLimiter.h"
 #include "Logger.h"
 #include "Protocol.h"
 #include "Router.h"
 #include "TcpServer.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -43,6 +45,17 @@ public:
     void start();
     void stop();
 
+    // Overload protection: max concurrent in-flight requests; 0 = unlimited.
+    // Requests beyond the limit get kConcurrencyLimited immediately (no queue).
+    void setMaxConcurrency(std::size_t n);
+
+    // Two-phase graceful shutdown: stop accepting + reject new requests with
+    // kShuttingDown, wait for in-flight requests to finish (up to timeout),
+    // then close the remaining connections. Runs asynchronously so the main
+    // loop (executor queue) stays alive while in-flight requests drain;
+    // onDone is invoked when shutdown completes.
+    void stopGracefully(std::chrono::milliseconds timeout, std::function<void()> onDone = {});
+
     // Backlog of the executor task queue (V1 limitation: always 0 until V2.2).
     std::size_t pendingTaskSize() const;
 
@@ -53,6 +66,7 @@ private:
     void handleRequest(const std::shared_ptr<TcpConnection>& conn, const Message& req);
     void sendResponse(const std::shared_ptr<TcpConnection>& conn,
                       const std::shared_ptr<RequestContext>& ctx, proto::Status status);
+    void releaseSlot();
 
 private:
     struct RequestContext {
@@ -65,6 +79,9 @@ private:
     TcpServer tcpServer_;
     Router router_;
     std::function<void(std::function<void()>)> executor_;
+    std::unique_ptr<ConcurrencyLimiter> limiter_;
+    std::atomic<bool> stopping_{false};
+    std::atomic<std::size_t> inflight_{0};
 };
 
 #endif  // MYRPCPROJECT_INCLUDE_RPCSERVER_H_
