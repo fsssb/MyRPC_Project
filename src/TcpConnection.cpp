@@ -1,9 +1,9 @@
 #include "TcpConnection.h"
 
 #include "Channel.h"
-#include "Codec.h"
 #include "EventLoop.h"
 #include "Logger.h"
+#include "RpcFramer.h"
 
 #include <cerrno>
 #include <cstring>
@@ -79,7 +79,7 @@ void TcpConnection::send(std::string message) {
 }
 
 void TcpConnection::sendMessage(const Message& message) {
-    send(Codec::encode(message));
+    send(RpcFramer::encode(message));
 }
 
 void TcpConnection::shutdown() {
@@ -132,7 +132,7 @@ void TcpConnection::handleRead() {
             touchActivity();
             if (messageCallback_) {
                 auto self = shared_from_this();
-                Codec::decode(inputBuffer_.get(), [self, this](const Message& msg) {
+                RpcFramer::decode(inputBuffer_.get(), [self, this](const Message& msg) {
                     if (messageCallback_) {
                         messageCallback_(self, msg);
                     }
@@ -160,7 +160,7 @@ void TcpConnection::handleRead() {
         touchActivity();
         if (messageCallback_) {
             auto self = shared_from_this();
-            Codec::decode(inputBuffer_.get(), [self, this](const Message& msg) {
+            RpcFramer::decode(inputBuffer_.get(), [self, this](const Message& msg) {
                 if (messageCallback_) {
                     messageCallback_(self, msg);
                 }

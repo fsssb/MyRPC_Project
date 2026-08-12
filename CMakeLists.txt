@@ -14,7 +14,8 @@ set(RPC_CORE_SOURCES
     src/Poller.cpp
     src/PollPoller.cpp
     src/EventLoop.cpp
-    src/Codec.cpp
+    src/Serializer.cpp
+    src/RpcFramer.cpp
     src/AIService.cpp
     src/TaskCoordinator.cpp
     src/Metrics.cpp

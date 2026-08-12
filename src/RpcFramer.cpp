@@ -1,39 +1,56 @@
-#include "Codec.h"
+#include "RpcFramer.h"
 
-#include <arpa/inet.h>
+#include "Logger.h"
+#include "Protocol.h"
+
 #include <cstring>
 
-std::string Codec::encode(const Message& message) {
-    const std::size_t bodyLen = message.body.size();
-    uint32_t netLen = htonl(static_cast<uint32_t>(bodyLen));
+std::string RpcFramer::encode(const Message& message) {
+    if (message.body.size() > proto::kMaxBodyLen) {
+        LOG_ERROR("RpcFramer::encode: body too large: " + std::to_string(message.body.size()));
+        return std::string();
+    }
+
+    RpcHeader header = message.header;
+    header.magic = proto::kMagic;
+    header.version = proto::kVersion;
+    header.bodyLen = static_cast<uint32_t>(message.body.size());
 
     std::string frame;
-    frame.resize(kHeaderLen + bodyLen);
-    std::memcpy(frame.data(), &netLen, kHeaderLen);
-    if (bodyLen > 0) {
-        std::memcpy(frame.data() + kHeaderLen, message.body.data(), bodyLen);
+    frame.resize(proto::kHeaderSize + message.body.size());
+    proto::encodeHeader(header, frame.data());
+    if (!message.body.empty()) {
+        std::memcpy(frame.data() + proto::kHeaderSize, message.body.data(), message.body.size());
     }
     return frame;
 }
 
-void Codec::decode(Buffer* buffer, const MessageCallback& cb) {
-    while (buffer->readableBytes() >= kHeaderLen) {
-        uint32_t netLen = 0;
-        std::memcpy(&netLen, buffer->peek(), kHeaderLen);
-        const uint32_t bodyLen = ntohl(netLen);
-
-        if (bodyLen > kMaxBodyLen) {
+void RpcFramer::decode(Buffer* buffer, const MessageCallback& cb) {
+    while (buffer->readableBytes() >= proto::kHeaderSize) {
+        RpcHeader header;
+        if (!proto::decodeHeader(buffer->peek(), &header)) {
+            // magic / version mismatch: not our protocol on this connection.
+            LOG_ERROR("RpcFramer::decode: protocol mismatch, draining buffer");
             buffer->retrieveAll();
             return;
         }
 
-        if (buffer->readableBytes() < kHeaderLen + bodyLen) {
+        if (header.bodyLen > proto::kMaxBodyLen) {
+            LOG_ERROR("RpcFramer::decode: frame too large: " + std::to_string(header.bodyLen));
+            buffer->retrieveAll();
             return;
         }
 
-        buffer->retrieve(kHeaderLen);
+        if (buffer->readableBytes() < proto::kHeaderSize + header.bodyLen) {
+            return;  // incomplete frame, wait for more data
+        }
+
+        buffer->retrieve(proto::kHeaderSize);
         Message msg;
-        msg.body = buffer->retrieveAsString(bodyLen);
+        msg.header = header;
+        if (header.bodyLen > 0) {
+            msg.body = buffer->retrieveAsString(header.bodyLen);
+        }
         if (cb) {
             cb(msg);
         }
