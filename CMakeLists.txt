@@ -21,6 +21,7 @@ set(RPC_CORE_SOURCES
     src/RpcClient.cpp
     src/RpcClusterChannel.cpp
     src/LoadBalancer.cpp
+    src/CircuitBreaker.cpp
     src/AIService.cpp
     src/TaskCoordinator.cpp
     src/Metrics.cpp
