@@ -27,6 +27,12 @@ struct RetryOptions {
     // hedgeAfterMs, a duplicate is sent to another instance; the first response
     // wins and the other is dropped. 0 disables hedging (bRPC backup_request).
     uint32_t hedgeAfterMs{0};
+
+    // Recovery rate limiting: when every instance is circuit-open, requests
+    // are admitted with probability min(recoveryMinWorking / instances, 1),
+    // so a recovering backend is not hit by the full burst at once (bRPC
+    // q/min_working_instances). 0 disables the admission control.
+    uint32_t recoveryMinWorking{1};
 };
 
 class RetryBudget {
