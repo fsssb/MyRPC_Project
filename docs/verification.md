@@ -149,4 +149,19 @@ bash ./scripts/acceptance.sh myrpc-epoll myrpc-e2e 12345
   （连续 3 次运行稳定通过）
 
 V2.0 回归：e2e 单请求/并发/心跳/超时 + rpc_client_demo 100 全绿。
+
+## V2.1 补全验证记录（hedging + 恢复期限流，2026-08-13）
+
+```text
+hedging（2 实例：12345 快 echo + 12346 慢 echo 2s，maxAttempts=1 隔离重试）:
+  hedgeAfterMs=300 → avg=135ms max=300ms 20/20 OK      PASS（治长尾：max 从 2003ms 降到 300ms）
+  hedgeAfterMs=0   → max=2005ms（慢实例 2s 全量等待）    对照
+  备份先到者胜：慢响应被 completed 标志丢弃               PASS
+
+熔断恢复期限流（2 实例全错误注入 → 全 OPEN）:
+  recoveryMinWorking=1 → 放行 33/60（≈50%），failfast 27  PASS
+  recoveryMinWorking=0 → failfast 48（禁用，仅半开探测放行 12）PASS
+
+回归：governance / registry / e2e / client demo 全绿。
+```
 ```

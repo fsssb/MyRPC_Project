@@ -35,6 +35,8 @@ MyRPCProject 是一个 C++17 实现的 RPC / 网络通信框架，用来验证 R
 - 节点级熔断 `CircuitBreaker`：10s 滑动窗口错误率 + 最小请求量防误熔断 + 半开探测恢复 + 隔离期指数退避。
 - 连接自动重连：对端恢复后自动回集群（1s 周期 + weak_ptr 防泄漏）。
 - 客户端重试：仅幂等方法、连接类错误重试、jitter 退避、集群级令牌桶防重试风暴；`DEADLINE_EXCEEDED` 与显式服务端错误不重试。
+- hedging（对冲请求）：幂等调用在 `hedgeAfterMs` 内未返回时向另一实例发备份，先到者胜（治长尾）。
+- 熔断恢复期限流：所有实例熔断时按 `minWorking/实例数` 概率放行，防恢复风暴。
 - 注册中心 `Registry` / `LocalRegistry`：ephemeral 实例（租约过期自动移除）、一次性 watch（ZooKeeper 语义）、版本 CAS；`RpcClusterChannel::setDiscovery` 接入。
 - 新增验收 demo：`rpc_governance_demo`（多实例 LB + 故障转移）、`rpc_registry_demo`（发现 / 摘流量 / 租约过期）。
 
@@ -47,7 +49,6 @@ MyRPCProject 是一个 C++17 实现的 RPC / 网络通信框架，用来验证 R
 - 真实任务队列深度（`pendingTaskSize()` 仍返回 0）。
 - 跨进程注册中心（当前 `LocalRegistry` 为进程内实现；接口已抽象，可对接 etcd / ZooKeeper）。
 - TLS / 鉴权 / 限流（QPS 维度）。
-- hedging（对冲请求）已预留 RetryPolicy 字段，未实现。
 
 ## 架构图
 

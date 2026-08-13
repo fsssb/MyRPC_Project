@@ -45,7 +45,7 @@ MyRPCProject 是一个 C++17 单机 RPC / 网络通信框架。V1 完成 Reactor
 | `RpcClusterChannel` | 客户端集群通道：多实例（静态列表或注册发现）+ LB 分发 + 熔断/重试包装。 |
 | `LoadBalancer` | p2c（延迟 EMA × inflight 评分）、平滑加权轮询、一致性哈希。 |
 | `CircuitBreaker` | 节点级熔断：滑动窗口错误率 + 半开探测 + 隔离期指数退避。 |
-| `RetryPolicy` | 幂等约束重试：连接类错误重试、jitter 退避、令牌桶防风暴。 |
+| `RetryPolicy` | 幂等约束重试：连接类错误重试、jitter 退避、令牌桶防风暴、hedging 对冲备份、恢复期限流（全熔断时按比例放行）。 |
 | `Registry` / `LocalRegistry` | 注册中心抽象与进程内实现：ephemeral 租约、一次性 watch、版本 CAS。 |
 
 ## 线程模型
@@ -157,6 +157,7 @@ Linux 下 wakeup pipe 两端设置为非阻塞。由于 `EpollPoller` 使用 ET�
 - 多实例集群通道 + p2c/加权轮询/一致性哈希负载均衡。
 - 节点级熔断（滑动窗口 + 半开恢复）、连接自动重连。
 - 幂等约束重试（jitter 退避 + 令牌桶）。
+- hedging 对冲请求（先到者胜）、熔断恢复期限流（全熔断概率放行）。
 - 注册发现（ephemeral 租约 + 一次性 watch）。
 - 非阻塞写、定时器、空闲连接清理、基础指标。
 
