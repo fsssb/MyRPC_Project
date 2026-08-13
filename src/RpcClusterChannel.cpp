@@ -110,11 +110,22 @@ void RpcClusterChannel::applyInstances(const std::vector<InstanceInfo>& infos) {
 
 void RpcClusterChannel::callAsync(RpcController& controller, const Value& request,
                                   Value* response, Done done) {
-    attemptOnce(controller, request, response, std::move(done), 1);
+    // A call may fan out (retries, hedged backups); the completion flag makes
+    // the first finisher win and drops the others.
+    auto completed = std::make_shared<std::atomic<bool>>(false);
+    auto sharedDone = [completed, done = std::move(done)]() mutable {
+        if (!completed->exchange(true, std::memory_order_relaxed)) {
+            done();
+        }
+    };
+    attemptOnce(controller, request, response, std::move(sharedDone), 1, completed,
+                static_cast<std::size_t>(-1), true);
 }
 
 void RpcClusterChannel::attemptOnce(RpcController& controller, const Value& request,
-                                    Value* response, Done done, uint32_t attempt) {
+                                    Value* response, Done done, uint32_t attempt,
+                                    const std::shared_ptr<std::atomic<bool>>& completed,
+                                    std::size_t excludeIndex, bool hedge) {
     std::vector<InstanceState> states;
     std::vector<std::shared_ptr<RpcChannel>> channels;
     std::vector<std::shared_ptr<CircuitBreaker>> breakers;
@@ -122,9 +133,11 @@ void RpcClusterChannel::attemptOnce(RpcController& controller, const Value& requ
     RetryOptions options;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& inst : instances_) {
+        for (std::size_t i = 0; i < instances_.size(); ++i) {
+            const auto& inst = instances_[i];
             InstanceState st;
-            st.healthy = inst.channel->isHealthy() && inst.breaker->isAvailable();
+            const bool excluded = (i == excludeIndex);
+            st.healthy = !excluded && inst.channel->isHealthy() && inst.breaker->isAvailable();
             st.inflight = inst.channel->inflightCount();
             st.latencyEmaMs = inst.channel->latencyEmaMs();
             states.push_back(st);
@@ -148,8 +161,12 @@ void RpcClusterChannel::attemptOnce(RpcController& controller, const Value& requ
         }
     }
 
+    // A copy of the completion callback for the hedge timer (maybeRetry below
+    // moves the parameter, but the backup must be able to finish the call too).
+    Done hedgeDone = done;
+
     auto maybeRetry = [this, &controller, &request, response, done = std::move(done),
-                       attempt, options](bool success) mutable {
+                       attempt, options, completed](bool success) mutable {
         if (success) {
             retryBudget_.refund();
             done();
@@ -163,14 +180,33 @@ void RpcClusterChannel::attemptOnce(RpcController& controller, const Value& requ
                                                       options.maxBackoffMs);
             auto self = shared_from_this();
             std::thread([self, &controller, &request, response, done = std::move(done),
-                         attempt, backoff]() mutable {
+                         attempt, backoff, completed]() mutable {
                 std::this_thread::sleep_for(backoff);
-                self->attemptOnce(controller, request, response, std::move(done), attempt + 1);
+                self->attemptOnce(controller, request, response, std::move(done), attempt + 1,
+                                  completed, static_cast<std::size_t>(-1), false);
             }).detach();
             return;  // done is deferred until the retry resolves
         }
         done();
     };
+
+    // Hedging: after hedgeAfterMs the first attempt is still pending, send a
+    // backup to another instance; the first finisher wins (completed flag).
+    // Backups never hedge again, and only the caller's first attempt may hedge.
+    if (hedge && options.hedgeAfterMs > 0 && attempt == 1 && controller.idempotent() &&
+        idx < channels.size()) {
+        const std::size_t firstIdx = idx;
+        auto self = shared_from_this();
+        loop_->runAfter(std::chrono::milliseconds(options.hedgeAfterMs),
+                        [self, &controller, &request, response, hedgeDone, completed,
+                         firstIdx]() mutable {
+                            if (completed->load(std::memory_order_relaxed)) {
+                                return;  // primary already finished
+                            }
+                            self->attemptOnce(controller, request, response,
+                                              std::move(hedgeDone), 1, completed, firstIdx, false);
+                        });
+    }
 
     if (idx >= channels.size() || !states[idx].healthy) {
         // All instances are unavailable: fail fast (retry may kick in).

@@ -23,8 +23,10 @@ struct RetryOptions {
     uint32_t budgetTokens{10};    // cluster-wide retry budget
     uint32_t baseBackoffMs{50};
     uint32_t maxBackoffMs{1000};
-    // hedging (backup request after hedgeAfterMs) is planned but not
-    // implemented yet.
+    // Hedging (backup request): when an idempotent call is still pending after
+    // hedgeAfterMs, a duplicate is sent to another instance; the first response
+    // wins and the other is dropped. 0 disables hedging (bRPC backup_request).
+    uint32_t hedgeAfterMs{0};
 };
 
 class RetryBudget {

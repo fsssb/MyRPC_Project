@@ -7,6 +7,7 @@
 #include "RetryPolicy.h"
 #include "RpcChannel.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -64,7 +65,9 @@ private:
     };
 
     void attemptOnce(RpcController& controller, const Value& request,
-                     Value* response, Done done, uint32_t attempt);
+                     Value* response, Done done, uint32_t attempt,
+                     const std::shared_ptr<std::atomic<bool>>& completed, std::size_t excludeIndex,
+                     bool hedge);
     std::size_t pickInstance(uint32_t requestKey);
     void failCall(RpcController* controller, proto::Status status,
                   const std::string& text, Done done);
