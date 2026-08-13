@@ -129,6 +129,7 @@ void RpcClusterChannel::attemptOnce(RpcController& controller, const Value& requ
     std::vector<InstanceState> states;
     std::vector<std::shared_ptr<RpcChannel>> channels;
     std::vector<std::shared_ptr<CircuitBreaker>> breakers;
+    std::vector<std::size_t> openIndices;
     std::shared_ptr<LoadBalancer> lb;
     RetryOptions options;
     {
@@ -143,6 +144,9 @@ void RpcClusterChannel::attemptOnce(RpcController& controller, const Value& requ
             states.push_back(st);
             channels.push_back(inst.channel);
             breakers.push_back(inst.breaker);
+            if (inst.breaker->isOpen()) {
+                openIndices.push_back(i);
+            }
         }
         lb = lb_;
         options = retryOptions_;
@@ -208,7 +212,25 @@ void RpcClusterChannel::attemptOnce(RpcController& controller, const Value& requ
                         });
     }
 
+    bool admitted = false;
     if (idx >= channels.size() || !states[idx].healthy) {
+        // Recovery rate limiting: when every instance is circuit-open, admit
+        // requests with probability min(recoveryMinWorking / total, 1) so a
+        // recovering backend is not hit by the full burst at once. Admitted
+        // requests go through allowRequest() below (half-open probe if the
+        // isolation period elapsed, otherwise rejected).
+        if (options.recoveryMinWorking > 0 && !openIndices.empty() &&
+            openIndices.size() == channels.size() && channels.size() > 0) {
+            const double p = std::min(1.0, static_cast<double>(options.recoveryMinWorking) /
+                                               static_cast<double>(channels.size()));
+            if (static_cast<double>(std::rand()) / static_cast<double>(RAND_MAX) < p) {
+                idx = openIndices[static_cast<std::size_t>(std::rand()) % openIndices.size()];
+                admitted = true;
+            }
+        }
+    }
+
+    if (!admitted && (idx >= channels.size() || !states[idx].healthy)) {
         // All instances are unavailable: fail fast (retry may kick in).
         failCall(&controller, proto::kUnknown, "no available instance",
                  [this, maybeRetry]() mutable { maybeRetry(false); });
