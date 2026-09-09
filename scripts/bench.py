@@ -13,10 +13,10 @@ import time
 from typing import List
 
 MAGIC = 0x4D50
-VERSION = 1
+VERSION = 2
 MSG_REQUEST = 0
 MSG_RESPONSE = 1
-K_HEADER = 24
+K_HEADER = 32
 K_MAX_BODY = 64 * 1024 * 1024
 V_STRING = 5
 STATUS_OK = 0
@@ -90,8 +90,8 @@ def decode_field1_string(buf: bytes):
 
 
 def encode_frame(request_id: int, method_id: int, body: bytes, timeout_ms: int) -> bytes:
-    header = struct.pack("!HBBBHIIIIB", MAGIC, VERSION, 0, MSG_REQUEST, 0,
-                         request_id, method_id, timeout_ms, len(body), 0)
+    header = struct.pack("!HBBBHIIIIQB", MAGIC, VERSION, 0, MSG_REQUEST, 0,
+                         request_id, method_id, timeout_ms, len(body), 0, 0)
     return header + body
 
 
@@ -108,7 +108,7 @@ async def recv_exactly(reader: asyncio.StreamReader, n: int) -> bytes:
 async def recv_response(reader: asyncio.StreamReader):
     header = await recv_exactly(reader, K_HEADER)
     (magic, version, _f, msg_type, status, request_id, _m, _t, body_len,
-     _r) = struct.unpack("!HBBBHIIIIB", header)
+     _tr, _r) = struct.unpack("!HBBBHIIIIQB", header)
     if magic != MAGIC or version != VERSION:
         raise ValueError("protocol mismatch")
     if body_len > K_MAX_BODY:
@@ -125,6 +125,7 @@ async def worker(
     timeout: float,
     method_id: int,
     expect_prefix: str,
+    body_size: int,
     latencies: List[float],
     counter: List[int],
     failures: List[int],
@@ -133,8 +134,10 @@ async def worker(
     try:
         seq = 0
         timeout_ms = int(timeout * 1000)
+        base = f"bench-{worker_id}-{seq}"
+        payload = base + "x" * max(0, body_size - len(base))  # pad to body_size
         while time.perf_counter() < deadline:
-            payload = f"bench-{worker_id}-{seq}"
+            payload = base + "x" * max(0, body_size - len(base))
             frame = encode_frame(seq + 1, method_id,
                                  encode_struct_field1_string(payload), timeout_ms)
 
@@ -196,6 +199,7 @@ async def run_bench(args: argparse.Namespace) -> None:
                 args.timeout,
                 method_id,
                 args.expect_prefix,
+                args.body_size,
                 latencies,
                 counter,
                 failures,
@@ -210,15 +214,20 @@ async def run_bench(args: argparse.Namespace) -> None:
 
     qps = counter[0] / total_time if total_time > 0 else 0.0
     avg = statistics.mean(latencies) if latencies else 0.0
+    p50 = percentile(latencies, 0.50)
+    p95 = percentile(latencies, 0.95)
     p99 = percentile(latencies, 0.99)
 
     print(f"method={args.method}")
     print(f"concurrency={args.concurrency}")
+    print(f"body_size={args.body_size}")
     print(f"duration_sec={total_time:.2f}")
     print(f"total_requests={counter[0]}")
     print(f"total_failures={failures[0]}")
     print(f"qps={qps:.2f}")
     print(f"avg_latency_ms={avg:.2f}")
+    print(f"p50_latency_ms={p50:.2f}")
+    print(f"p95_latency_ms={p95:.2f}")
     print(f"p99_latency_ms={p99:.2f}")
 
 
@@ -233,6 +242,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=5)
     parser.add_argument("--duration", type=int, default=10)
     parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--body-size", type=int, default=128,
+                        help="request body size in bytes (echo fast-path benchmark)")
     return parser.parse_args()
 
 
