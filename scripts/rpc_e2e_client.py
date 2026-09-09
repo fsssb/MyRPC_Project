@@ -21,12 +21,12 @@ import struct
 import sys
 
 MAGIC = 0x4D50
-VERSION = 1
+VERSION = 2
 MSG_REQUEST = 0
 MSG_RESPONSE = 1
 MSG_HEARTBEAT = 3
 MSG_HEARTBEAT_ACK = 4
-K_HEADER = 24
+K_HEADER = 32
 K_MAX_BODY = 64 * 1024 * 1024
 
 STATUS_OK = 0
@@ -110,15 +110,15 @@ def decode_field1_string(buf: bytes):
 
 
 def encode_frame(request_id: int, method_id: int, body: bytes, timeout_ms: int = 0,
-                 msg_type: int = MSG_REQUEST, status: int = 0) -> bytes:
-    header = struct.pack("!HBBBHIIIIB", MAGIC, VERSION, 0, msg_type, status,
-                         request_id, method_id, timeout_ms, len(body), 0)
+                 msg_type: int = MSG_REQUEST, status: int = 0, trace_id: int = 0) -> bytes:
+    header = struct.pack("!HBBBHIIIIQB", MAGIC, VERSION, 0, msg_type, status,
+                         request_id, method_id, timeout_ms, len(body), trace_id, 0)
     return header + body
 
 
 def decode_header(raw: bytes):
     (magic, version, flags, msg_type, status, request_id, method_id,
-     timeout_ms, body_len, _reserved) = struct.unpack("!HBBBHIIIIB", raw)
+     timeout_ms, body_len, trace_id, _reserved) = struct.unpack("!HBBBHIIIIQB", raw)
     return magic, version, flags, msg_type, status, request_id, method_id, body_len
 
 
@@ -146,7 +146,8 @@ def read_frame(sock):
 
 def run_single(sock, args, method_id: int) -> int:
     body = encode_struct_with_field1_string(args.body)
-    sock.sendall(encode_frame(1, method_id, body, timeout_ms=args.timeout_ms))
+    sock.sendall(encode_frame(1, method_id, body, timeout_ms=args.timeout_ms,
+                             trace_id=args.trace_id))
     msg_type, status, _rid, resp_body = read_frame(sock)
     if msg_type != MSG_RESPONSE:
         print(f"UNEXPECTED_FRAME: msg_type={msg_type}", file=sys.stderr)
@@ -224,6 +225,8 @@ def main() -> int:
     p.add_argument("--heartbeat", type=int, default=0,
                    help=">0 时发送 N 个心跳并验证 ack")
     p.add_argument("--timeout", type=float, default=15.0, help="socket 超时（秒）")
+    p.add_argument("--trace-id", type=lambda x: int(x, 0), default=0,
+                   help="请求 trace_id（十六进制，0=随机由服务端生成）")
     args = p.parse_args()
 
     try:

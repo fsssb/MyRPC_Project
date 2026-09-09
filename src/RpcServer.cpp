@@ -1,5 +1,7 @@
 #include "RpcServer.h"
 
+#include "Tracing.h"
+
 #include "EventLoop.h"
 #include "Metrics.h"
 #include "TcpConnection.h"
@@ -108,6 +110,8 @@ void RpcServer::handleRequest(const std::shared_ptr<TcpConnection>& conn, const 
     auto ctx = std::make_shared<RequestContext>();
     ctx->header = req.header;
     ctx->start = std::chrono::steady_clock::now();
+    // Distributed tracing: keep the caller's trace id or mint a new one.
+    ctx->traceId = req.header.traceId != 0 ? req.header.traceId : tracing::generateTraceId();
 
     if (stopping_.load()) {
         sendResponse(conn, ctx, proto::kShuttingDown);
@@ -137,21 +141,26 @@ void RpcServer::handleRequest(const std::shared_ptr<TcpConnection>& conn, const 
         sendResponse(conn, ctx, proto::kMethodNotFound);
         return;
     }
+    ctx->methodName = router_.methodName(req.header.methodId);
 
     const bool reply = req.header.msgType != proto::kMsgOneway;
     const auto weakConn = std::weak_ptr<TcpConnection>(conn);
     const auto server = this;
     handler(ctx->request, &ctx->response,
             [server, weakConn, ctx, reply](proto::Status status) {
+                const auto doneAt = std::chrono::steady_clock::now();
+                const auto latencyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    doneAt - ctx->start);
                 // Server-side deadline: the handler exceeded the client's
                 // timeout, so the response would arrive too late.
-                if (ctx->header.timeoutMs > 0) {
-                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - ctx->start);
-                    if (elapsed.count() >= static_cast<int64_t>(ctx->header.timeoutMs)) {
-                        status = proto::kDeadlineExceeded;
-                    }
+                if (ctx->header.timeoutMs > 0 &&
+                    latencyMs.count() >= static_cast<int64_t>(ctx->header.timeoutMs)) {
+                    status = proto::kDeadlineExceeded;
                 }
+                // Record one server span per request (framework-generated).
+                tracing::recordSpan(
+                    {ctx->traceId, ctx->header.methodId, ctx->methodName.c_str(),
+                     static_cast<uint16_t>(status), latencyMs.count(), "server"});
                 server->releaseSlot();
                 if (!reply) {
                     return;  // oneway calls never receive a response
@@ -159,6 +168,7 @@ void RpcServer::handleRequest(const std::shared_ptr<TcpConnection>& conn, const 
                 if (const auto locked = weakConn.lock()) {
                     Message resp;
                     resp.header = ctx->header;
+                    resp.header.traceId = ctx->traceId;  // echo the trace id back
                     resp.header.msgType = proto::kMsgResponse;
                     resp.header.status = status;
                     if (status == proto::kOk) {
@@ -176,6 +186,7 @@ void RpcServer::sendResponse(const std::shared_ptr<TcpConnection>& conn,
     }
     Message resp;
     resp.header = ctx->header;
+    resp.header.traceId = ctx->traceId;  // echo the trace id back
     resp.header.msgType = proto::kMsgResponse;
     resp.header.status = status;
     conn->sendMessage(resp);

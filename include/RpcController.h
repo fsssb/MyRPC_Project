@@ -33,6 +33,10 @@ public:
     void setIdempotent(bool idempotent) { idempotent_ = idempotent; }
     bool idempotent() const { return idempotent_; }
 
+    // Distributed tracing id; when 0 the channel generates one per call.
+    void setTraceId(uint64_t traceId) { traceId_ = traceId; }
+    uint64_t traceId() const { return traceId_; }
+
     uint32_t methodId() const { return methodId_; }
     uint32_t timeoutMs() const { return timeoutMs_; }
     bool hasDeadline() const { return timeoutMs_ > 0; }
@@ -52,6 +56,7 @@ private:
     uint32_t timeoutMs_{0};
     uint32_t requestKey_{0};
     bool idempotent_{true};  // safe default: echo-style calls are idempotent
+    uint64_t traceId_{0};
     proto::Status status_{proto::kOk};
     std::string errorText_;
 };

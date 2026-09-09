@@ -74,6 +74,8 @@ private:
         Value response;
         RpcHeader header;
         std::chrono::steady_clock::time_point start;
+        uint64_t traceId{0};
+        std::string methodName;
     };
 
     TcpServer tcpServer_;
