@@ -1,8 +1,8 @@
 # 架构说明
 
-MyRPCProject 是一个 C++17 单机 RPC / 网络通信框架。V1 完成 Reactor 网络底座；V2.0 补齐 RPC 语义（24B 协议头、自研序列化、服务端路由与超时、C++ 客户端 stub、单连接多路复用、心跳）；V2.1 增加服务治理（服务端限流与优雅关闭、多实例负载均衡、熔断、重试、注册发现）。
+MyRPCProject 是一个 C++17 单机 RPC / 网络通信框架。V1 完成 Reactor 网络底座；V2.0 补齐 RPC 语义（32B 协议头、自研序列化、服务端路由与超时、C++ 客户端 stub、单连接多路复用、心跳）；V2.1 增加服务治理（限流与优雅关闭、负载均衡、熔断、重试、注册发现）；V2.2 增加性能与可观测（M:N 协程、链路追踪、写背压、指标端点）。
 
-它不是生产级 RPC 框架。V2.2（性能 / 可观测）尚未实现。
+纯自研零依赖；不是生产级 RPC 框架。
 
 ## 组件概览
 
@@ -28,8 +28,8 @@ MyRPCProject 是一个 C++17 单机 RPC / 网络通信框架。V1 完成 Reactor
 
 | 组件 | 职责 |
 | --- | --- |
-| `Protocol.h` | 24B 定长协议头（magic/version/flags/msg_type/status/request_id/method_id/timeout_ms/body_len/reserved）、状态码枚举、头编解码（网络字节序）。 |
-| `RpcFramer` | 拆帧：`[24B header][body]`，处理 TCP 粘包/半包，超限帧拒收。 |
+| `Protocol.h` | 32B 定长协议头（magic/version/flags/msg_type/status/request_id/method_id/timeout_ms/body_len/trace_id/reserved）、状态码枚举、头编解码（网络字节序）。 |
+| `RpcFramer` | 拆帧：`[32B header][body]`，处理 TCP 粘包/半包，超限帧拒收。 |
 | `Serializer` | 自研 tag-based 二进制序列化：动态 `Value` 类型、字段号演进兼容、`toJson` 调试视图。 |
 | `RpcServer` | 服务端入口：包装 `TcpServer`，消息分发（请求/心跳）、服务端 deadline 判定、方法路由调用。 |
 | `Router` | `method_id → handler` 路由表（method_id = FNV-1a32("service.method")）。 |
@@ -47,6 +47,15 @@ MyRPCProject 是一个 C++17 单机 RPC / 网络通信框架。V1 完成 Reactor
 | `CircuitBreaker` | 节点级熔断：滑动窗口错误率 + 半开探测 + 隔离期指数退避。 |
 | `RetryPolicy` | 幂等约束重试：连接类错误重试、jitter 退避、令牌桶防风暴、hedging 对冲备份、恢复期限流（全熔断时按比例放行）。 |
 | `Registry` / `LocalRegistry` | 注册中心抽象与进程内实现：ephemeral 租约、一次性 watch、版本 CAS。 |
+
+**V2.2（性能与可观测）**
+
+| 组件 | 职责 |
+| --- | --- |
+| `Tracing` | trace_id 生成 / 透传（协议头 32B，version=2）、每请求 span 记录。 |
+| `Scheduler` | M:N 协程调度器（ucontext 有栈协程 + N worker + `co_sleep` 让出）。 |
+| `Histogram` | 定长桶延时分布（Prometheus bucket 渲染）。 |
+| `MetricsServer` | 最小 HTTP `/metrics` 端点（`Metrics::renderSnapshot`）。 |
 
 ## 线程模型
 
@@ -84,12 +93,12 @@ flowchart TB
 Client: 调用线程 call()/callAsync()
   -> RpcController（method / timeout）
   -> RpcChannel：分配 request_id（槽位表），Serializer 编码 body
-  -> 24B header + body，投递到 client loop 线程发送
+  -> 32B header + body，投递到 client loop 线程发送
   -> TcpConnection 非阻塞写（未写完进 outputQueue_）
 
 Server: Acceptor 接受连接 -> Sub EventLoop
   -> TcpConnection::handleRead 读入 inputBuffer
-  -> RpcFramer::decode 拆出完整帧（24B 头 + body）
+  -> RpcFramer::decode 拆出完整帧（32B 头 + body）
   -> RpcServer::onMessage：
        msg_type=heartbeat  -> 直接回 heartbeat-ack
        msg_type=request    -> 投递 executor 执行 handler
@@ -107,7 +116,7 @@ Client: 收到响应帧
 
 ## 协议格式
 
-每个消息帧：24 字节定长头（网络字节序）+ 序列化 body。
+每个消息帧：32 字节定长头（网络字节序）+ 序列化 body。
 
 ```text
 byte  0-1    magic       u16   "MP"（0x4D50）
@@ -118,8 +127,9 @@ byte  5-6    status      u16   请求为 0；响应承载错误码
 byte  7-10   request_id  u32   调用方唯一、服务端原样带回；多路复用关联键
 byte 11-14   method_id   u32   FNV-1a32(service.method) 快速路由
 byte 15-18   timeout_ms  u32   客户端 RPC 总超时；0=无超时
-byte 19-22   body_len    u32   序列化 body 字节数（不含 24B 头）
-byte 23     reserved    u8    扩展预留
+byte 19-22   body_len    u32   序列化 body 字节数（不含 32B 头）
+byte 23-30   trace_id    u64   链路追踪 id（0 = 无）
+byte 31     reserved    u8    扩展预留
 ```
 
 - `body_len` 语义写死为「不含头的 body 字节数」；半包保留在缓冲、粘包一次拆多帧。
@@ -149,7 +159,7 @@ Linux 下 wakeup pipe 两端设置为非阻塞。由于 `EpollPoller` 使用 ET�
 已实现（V1 底座 + V2.0 + V2.1）：
 
 - Reactor 事件分发；Linux epoll ET 和 macOS poll fallback。
-- 24B RPC 头 + tag-based 序列化（`request_id` / `method_id` / `status` / `timeout_ms`）。
+- 32B RPC 头 + tag-based 序列化（`request_id` / `method_id` / `status` / `timeout_ms` / `trace_id`）。
 - 服务端方法路由、服务端 deadline、心跳应答、状态码体系。
 - C++ 客户端 stub：单连接多路复用、乱序响应匹配、迟到响应丢弃、同步/异步 API、客户端 deadline。
 - 应用层心跳保活与对端判死。
@@ -159,11 +169,11 @@ Linux 下 wakeup pipe 两端设置为非阻塞。由于 `EpollPoller` 使用 ET�
 - 幂等约束重试（jitter 退避 + 令牌桶）。
 - hedging 对冲请求（先到者胜）、熔断恢复期限流（全熔断概率放行）。
 - 注册发现（ephemeral 租约 + 一次性 watch）。
-- 非阻塞写、定时器、空闲连接清理、基础指标。
+- 非阻塞写 + 高水位背压、定时器、空闲连接清理。
+- M:N 协程调度（handler 阻塞不占线程）。
+- trace_id 链路追踪（框架 span 日志）、延时 histogram / 状态码分布 / 真实队列深度、`/metrics` HTTP 端点。
 
-未实现（后续阶段）：
+未实现：
 
-- M:N 协程调度、零拷贝、outputBuffer 高水位背压（V2.2）。
-- trace_id 链路追踪、histogram 指标、`/metrics` HTTP endpoint（V2.2）。
 - 跨进程注册中心（当前 LocalRegistry 进程内；接口可对接 etcd / ZooKeeper）。
-- TLS / 鉴权。
+- 零拷贝、流式 RPC、TLS / 鉴权。

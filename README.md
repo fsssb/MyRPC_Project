@@ -1,8 +1,8 @@
 # MyRPCProject
 
-MyRPCProject 是一个 C++17 实现的 RPC / 网络通信框架，用来验证 Reactor 网络模型、单连接多路复用、异步业务执行和跨线程安全回写链路。V2.0 已把 V1 的「Length-Prefix 分帧原型」升级为带完整 RPC 语义的协议（request_id / method / status / 超时），并提供了 C++ 客户端 stub。
+MyRPCProject 是一个 C++17 实现的 RPC / 网络通信框架：V1 完成 Reactor 网络底座，V2.0 补齐完整 RPC 语义（协议头 / 序列化 / 客户端 stub / 多路复用 / 心跳），V2.1 增加服务治理（限流 / 负载均衡 / 熔断 / 重试 / 注册发现），V2.2 增加性能与可观测（协程调度 / 链路追踪 / 背压 / 指标）。
 
-它不是生产级 RPC 框架，也不是完整 Agent Runtime。V2.1（服务治理）与 V2.2（性能/可观测）尚未实现。
+纯自研零第三方依赖，面试官 clone 即可构建运行。它不是生产级 RPC 框架（边界见下文）。
 
 ## 已实现能力
 
@@ -40,15 +40,21 @@ MyRPCProject 是一个 C++17 实现的 RPC / 网络通信框架，用来验证 R
 - 注册中心 `Registry` / `LocalRegistry`：ephemeral 实例（租约过期自动移除）、一次性 watch（ZooKeeper 语义）、版本 CAS；`RpcClusterChannel::setDiscovery` 接入。
 - 新增验收 demo：`rpc_governance_demo`（多实例 LB + 故障转移）、`rpc_registry_demo`（发现 / 摘流量 / 租约过期）。
 
+**V2.2（性能与可观测）**
+
+- 协议头扩展 32B 并携带 `trace_id`（version=2）；框架自动生成/透传，服务端每请求记录 span（method/status/耗时）到日志，跨异步 handler 不丢（显式上下文传递，非 thread-local）。
+- M:N 协程调度器 `Scheduler`（ucontext 有栈协程）：handler 阻塞（`co_sleep`）只让出协程不占线程；`demo.slow` 已协程化。
+- 写背压：`outputBuffer` 高水位（默认 4MB）+ 慢消费者超时断开，防内存无界增长。
+- 可观测：延时 histogram（Prometheus 桶）、状态码分布、真实执行队列深度（`pendingSize`）、HTTP `/metrics` 端点（默认 18080 端口，Prometheus 文本）。
+
 ## 当前边界
 
-当前还没有实现（V2.2 规划）：
+当前还没有实现：
 
-- M:N 协程调度、零拷贝、outputBuffer 高水位背压。
-- trace_id 链路追踪、histogram 指标、`/metrics` HTTP endpoint。
-- 真实任务队列深度（`pendingTaskSize()` 仍返回 0）。
 - 跨进程注册中心（当前 `LocalRegistry` 为进程内实现；接口已抽象，可对接 etcd / ZooKeeper）。
-- TLS / 鉴权 / 限流（QPS 维度）。
+- 零拷贝（sendfile/io_uring）、HTTP/2、流式 RPC。
+- TLS / 鉴权 / QPS 维度限流。
+- 完整分布式链路追踪（span 树/采样率配置当前为全采）。
 
 ## 架构图
 
@@ -112,6 +118,14 @@ cmake --build build -j
 
 - `demo.echo`：回显请求体（快速链路）。
 - `demo.ai`：模拟长耗时 AI 任务（约 250ms，异步执行链路）。
+
+协程调度器 demo（M:N 协程，`co_sleep` 不占线程）：
+
+```bash
+./build/rpc_coroutine_demo 4 100
+```
+
+指标端点（服务启动后）：`curl http://127.0.0.1:18080/metrics`
 
 运行 C++ 客户端 demo（并发多路复用 + 超时验证）：
 

@@ -164,4 +164,29 @@ hedging（2 实例：12345 快 echo + 12346 慢 echo 2s，maxAttempts=1 隔离�
 
 回归：governance / registry / e2e / client demo 全绿。
 ```
+
+## V2.2 性能与可观测验证记录（2026-09-09）
+
+```text
+阶段 A trace（协议头 32B, version=2）:
+  显式 trace-id 0x1234567890abcdef → span trace=1234567890abcdef      PASS
+  自动生成 + 贯穿异步 demo.ai（250ms worker）→ latency_ms=255         PASS
+  并发/心跳/超时（32B 头）回归                                        PASS
+
+阶段 B M:N 协程:
+  rpc_coroutine_demo: 100×co_sleep(100ms) on 4 workers = 102ms（串行需 2500ms）PASS
+  20 并发 demo.slow(2s) 在途 → 进程线程数不涨（16→16）                PASS
+  20 并发 slow 总耗时 2.01s（协程并行，非占线程串行）                  PASS
+  graceful shutdown（slow 在途排空）                                  PASS
+
+阶段 C 写背压:
+  慢消费者（SO_RCVBUF=4KB 不读）→ 服务端高水位(32KB) 持续 500ms → 断开
+  客户端读完残留(~813KB)后收 EOF                                     PASS
+  正常客户端（并发/心跳）不受影响                                      PASS
+
+阶段 D 指标:
+  curl /metrics → histogram（51 快 + 1×250ms 分布正确）、status、total  PASS
+  EventLoop::pendingSize 入队 500 → 返回 500（真实队列深度）          PASS
+  回归：governance / registry / e2e 全绿
+```
 ```
