@@ -2,6 +2,7 @@
 #include "EventLoop.h"
 #include "Logger.h"
 #include "Metrics.h"
+#include "MetricsServer.h"
 #include "RpcServer.h"
 #include "Scheduler.h"
 
@@ -40,6 +41,12 @@ int main(int argc, char* argv[]) {
     EventLoop mainLoop;
     const std::size_t aiWorkers = static_cast<std::size_t>(threadNum <= 0 ? 8 : threadNum * 4);
     AIService aiService(aiWorkers);
+    // V2.2: expose Prometheus text metrics over a minimal HTTP endpoint.
+    const uint16_t metricsPort = static_cast<uint16_t>(
+        argc > 5 ? std::atoi(argv[5]) : 18080);
+    MetricsServer metricsServer(&mainLoop, metricsPort);
+    metricsServer.start();
+
     // V2.2: run handlers on the M:N coroutine scheduler so a blocking
     // handler (demo.slow) yields its worker instead of occupying a thread.
     Scheduler scheduler;
