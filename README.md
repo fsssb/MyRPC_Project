@@ -51,7 +51,7 @@ MyRPCProject 是一个 C++17 实现的 RPC / 网络通信框架：V1 完成 Reac
 
 当前还没有实现：
 
-- 跨进程注册中心（当前 `LocalRegistry` 为进程内实现；接口已抽象，可对接 etcd / ZooKeeper）。
+- 对接 etcd / ZooKeeper（当前 `Registry` 接口有进程内 `LocalRegistry` 与跨进程 `RegistryClient` 两种实现）。
 - 零拷贝（sendfile/io_uring）、HTTP/2、流式 RPC。
 - TLS / 鉴权 / QPS 维度限流。
 - 完整分布式链路追踪（span 树/采样率配置当前为全采）。
@@ -146,6 +146,16 @@ cmake --build build -j
 
 ```bash
 ./build/rpc_registry_demo
+```
+
+跨进程注册中心（独立 `rpc_registry_server` 进程 + 多服务实例共享发现）：
+
+```bash
+./build/rpc_registry_server 18000 &        # 注册中心服务
+./build/rpc_demo 2 12345 0 0 18081 127.0.0.1 18000 demo &   # 实例 A 注册
+./build/rpc_demo 2 12346 0 0 18082 127.0.0.1 18000 demo &   # 实例 B 注册
+./build/rpc_registry_client_demo 127.0.0.1 18000 demo       # 客户端经注册中心发现
+# 杀掉任一实例 → 客户端 watch 收敛到存活实例，无错误风暴
 ```
 
 macOS 本机构建使用 `PollPoller`。Linux `EpollPoller` / ET 路径建议用 Docker 验证（见下）。

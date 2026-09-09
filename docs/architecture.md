@@ -46,7 +46,8 @@ MyRPCProject 是一个 C++17 单机 RPC / 网络通信框架。V1 完成 Reactor
 | `LoadBalancer` | p2c（延迟 EMA × inflight 评分）、平滑加权轮询、一致性哈希。 |
 | `CircuitBreaker` | 节点级熔断：滑动窗口错误率 + 半开探测 + 隔离期指数退避。 |
 | `RetryPolicy` | 幂等约束重试：连接类错误重试、jitter 退避、令牌桶防风暴、hedging 对冲备份、恢复期限流（全熔断时按比例放行）。 |
-| `Registry` / `LocalRegistry` | 注册中心抽象与进程内实现：ephemeral 租约、一次性 watch、版本 CAS。 |
+| `Registry` / `LocalRegistry` | 注册中心抽象：ephemeral 租约、一次性 watch、版本 CAS；进程内实现。 |
+| `RegistryClient` / `rpc_registry_server` | 注册中心的跨进程形态：`Registry` 接口的 RPC 实现（register/unregister/renew/lookup + watch 长轮询），多进程服务实例共享。 |
 
 **V2.2（性能与可观测）**
 
@@ -175,5 +176,5 @@ Linux 下 wakeup pipe 两端设置为非阻塞。由于 `EpollPoller` 使用 ET�
 
 未实现：
 
-- 跨进程注册中心（当前 LocalRegistry 进程内；接口可对接 etcd / ZooKeeper）。
+- 对接 etcd / ZooKeeper（Registry 接口已有进程内与跨进程 RPC 两种实现）。
 - 零拷贝、流式 RPC、TLS / 鉴权。

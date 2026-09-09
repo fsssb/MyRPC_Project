@@ -23,6 +23,7 @@ set(RPC_CORE_SOURCES
     src/LoadBalancer.cpp
     src/CircuitBreaker.cpp
     src/LocalRegistry.cpp
+    src/RegistryClient.cpp
     src/Tracing.cpp
     src/Histogram.cpp
     src/MetricsServer.cpp
@@ -97,6 +98,26 @@ add_executable(rpc_coroutine_demo
 )
 
 target_link_libraries(rpc_coroutine_demo
+    PRIVATE
+        rpc_core
+        Threads::Threads
+)
+
+add_executable(rpc_registry_server
+    src/rpc_registry_server.cpp
+)
+
+target_link_libraries(rpc_registry_server
+    PRIVATE
+        rpc_core
+        Threads::Threads
+)
+
+add_executable(rpc_registry_client_demo
+    src/rpc_registry_client_demo.cpp
+)
+
+target_link_libraries(rpc_registry_client_demo
     PRIVATE
         rpc_core
         Threads::Threads
