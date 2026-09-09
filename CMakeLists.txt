@@ -24,6 +24,7 @@ set(RPC_CORE_SOURCES
     src/CircuitBreaker.cpp
     src/LocalRegistry.cpp
     src/Tracing.cpp
+    src/Scheduler.cpp
     src/AIService.cpp
     src/TaskCoordinator.cpp
     src/Metrics.cpp
@@ -84,6 +85,16 @@ add_executable(rpc_registry_demo
 )
 
 target_link_libraries(rpc_registry_demo
+    PRIVATE
+        rpc_core
+        Threads::Threads
+)
+
+add_executable(rpc_coroutine_demo
+    src/rpc_coroutine_demo.cpp
+)
+
+target_link_libraries(rpc_coroutine_demo
     PRIVATE
         rpc_core
         Threads::Threads
