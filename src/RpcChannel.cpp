@@ -18,6 +18,8 @@
 #include <unistd.h>
 #include <utility>
 
+#include "Tracing.h"
+
 RpcChannel::RpcChannel(EventLoop* loop, std::string host, uint16_t port)
     : loop_(loop),
       host_(std::move(host)),
@@ -212,8 +214,10 @@ uint32_t RpcChannel::asyncCall(RpcController& controller, const Value& request,
 
     // Send the request on the loop thread; frames issued before the connection
     // is ready are queued and flushed by onConnected.
-    loop_->runInLoop([self = shared_from_this(), id, methodId, timeoutMs, body]() {
-        self->sendInLoop(id, methodId, timeoutMs, body);
+    loop_->runInLoop([self = shared_from_this(), id, methodId, timeoutMs, body,
+                      traceId = controller.traceId() != 0 ? controller.traceId()
+                                                          : tracing::generateTraceId()]() {
+        self->sendInLoop(id, methodId, timeoutMs, body, traceId);
     });
     return id;
 }
@@ -429,7 +433,7 @@ void RpcChannel::flushOutput() {
 }
 
 void RpcChannel::sendInLoop(uint32_t id, uint32_t methodId, uint32_t timeoutMs,
-                            const std::string& body) {
+                            const std::string& body, uint64_t traceId) {
     if (state_ == State::Closed) {
         failPending(id, proto::kUnknown, "channel closed before send");
         return;
@@ -439,6 +443,7 @@ void RpcChannel::sendInLoop(uint32_t id, uint32_t methodId, uint32_t timeoutMs,
     header.requestId = id;
     header.methodId = methodId;
     header.timeoutMs = timeoutMs;
+    header.traceId = traceId;
     writeFrame(header, body);
 }
 

@@ -23,6 +23,7 @@ set(RPC_CORE_SOURCES
     src/LoadBalancer.cpp
     src/CircuitBreaker.cpp
     src/LocalRegistry.cpp
+    src/Tracing.cpp
     src/AIService.cpp
     src/TaskCoordinator.cpp
     src/Metrics.cpp

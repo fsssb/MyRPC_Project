@@ -95,7 +95,8 @@ private:
     void onConnected();
     void flushOutput();
     void writeFrame(const RpcHeader& header, const std::string& body);
-    void sendInLoop(uint32_t id, uint32_t methodId, uint32_t timeoutMs, const std::string& body);
+    void sendInLoop(uint32_t id, uint32_t methodId, uint32_t timeoutMs,
+                   const std::string& body, uint64_t traceId);
     void onCallTimeout(uint32_t id);
     void onHeartbeatTick();
     void scheduleReconnect();

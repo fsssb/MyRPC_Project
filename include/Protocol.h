@@ -7,20 +7,21 @@
 #include <cstdint>
 #include <cstring>
 
-// V2.0 wire protocol: a 24-byte fixed header (network byte order) followed by
-// the serialized body. This is the V1 Length-Prefix framing upgraded to carry
-// RPC semantics (see docs/v2-design-draft.md section 1.2).
+// V2.0 wire protocol: a 32-byte fixed header (network byte order) followed by
+// the serialized body. The header grew from 24B in V2.2 to carry a trace_id
+// (version bumped to 2); everything else is unchanged.
 //
 //   byte  0-1    magic       u16   "MP" (0x4D50) fast protocol identification
-//   byte  2      version     u8    protocol version, currently 1
-//   byte  3      flags       u8    bit0=body compressed  bit1=attachment  bit2=trace
+//   byte  2      version     u8    protocol version, currently 2
+//   byte  3      flags       u8    bit0=body compressed  bit1=attachment  bit2=trace present
 //   byte  4      msg_type    u8    0=request 1=response 2=oneway 3=heartbeat 4=heartbeat-ack
 //   byte  5-6    status      u16   0 for requests; error code in responses
 //   byte  7-10   request_id  u32   correlation id, echoed back by the server
 //   byte 11-14   method_id   u32   FNV-1a32(service.method) for fast routing
 //   byte 15-18   timeout_ms  u32   client RPC deadline in ms; 0 means no deadline
-//   byte 19-22   body_len    u32   serialized body bytes (excluding the 24B header)
-//   byte 23     reserved    u8    reserved for future protocol extensions
+//   byte 19-22   body_len    u32   serialized body bytes (excluding the 32B header)
+//   byte 23-30   trace_id    u64   distributed tracing id (0 = none)
+//   byte 31     reserved    u8    reserved for future protocol extensions
 //
 // body_len semantics: bytes of the serialized body, the header excluded. The
 // server uses timeout_ms to fail requests that exceed their deadline with
@@ -36,14 +37,15 @@ struct RpcHeader {
     uint32_t methodId{0};
     uint32_t timeoutMs{0};
     uint32_t bodyLen{0};
+    uint64_t traceId{0};
     uint8_t reserved{0};
 };
 
 namespace proto {
 
 constexpr uint16_t kMagic = 0x4D50;
-constexpr uint8_t kVersion = 1;
-constexpr std::size_t kHeaderSize = 24;
+constexpr uint8_t kVersion = 2;
+constexpr std::size_t kHeaderSize = 32;
 constexpr uint32_t kMaxBodyLen = 64 * 1024 * 1024;  // 64 MiB; larger frames are rejected
 
 // Message types.
@@ -89,7 +91,15 @@ inline uint32_t methodIdOf(const char* methodKey) {
     return fnv1a32(methodKey, std::strlen(methodKey));
 }
 
-// Encode the header into a 24-byte buffer (network byte order).
+// Encode the header into a 32-byte buffer (network byte order).
+inline uint64_t htonll64(uint64_t value) {
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    return __builtin_bswap64(value);
+#else
+    return value;
+#endif
+}
+
 inline void encodeHeader(const RpcHeader& h, char* out) {
     uint16_t magic = htons(h.magic);
     uint16_t status = htons(h.status);
@@ -97,6 +107,7 @@ inline void encodeHeader(const RpcHeader& h, char* out) {
     uint32_t methodId = htonl(h.methodId);
     uint32_t timeoutMs = htonl(h.timeoutMs);
     uint32_t bodyLen = htonl(h.bodyLen);
+    uint64_t traceId = htonll64(h.traceId);
     std::memcpy(out, &magic, 2);
     out[2] = h.version;
     out[3] = h.flags;
@@ -106,10 +117,11 @@ inline void encodeHeader(const RpcHeader& h, char* out) {
     std::memcpy(out + 11, &methodId, 4);
     std::memcpy(out + 15, &timeoutMs, 4);
     std::memcpy(out + 19, &bodyLen, 4);
-    out[23] = h.reserved;
+    std::memcpy(out + 23, &traceId, 8);
+    out[31] = h.reserved;
 }
 
-// Decode a 24-byte buffer into host byte order. Returns false when the magic or
+// Decode a 32-byte buffer into host byte order. Returns false when the magic or
 // version does not match this protocol.
 inline bool decodeHeader(const char* in, RpcHeader* h) {
     uint16_t magic = 0;
@@ -118,12 +130,14 @@ inline bool decodeHeader(const char* in, RpcHeader* h) {
     uint32_t methodId = 0;
     uint32_t timeoutMs = 0;
     uint32_t bodyLen = 0;
+    uint64_t traceId = 0;
     std::memcpy(&magic, in, 2);
     std::memcpy(&status, in + 5, 2);
     std::memcpy(&requestId, in + 7, 4);
     std::memcpy(&methodId, in + 11, 4);
     std::memcpy(&timeoutMs, in + 15, 4);
     std::memcpy(&bodyLen, in + 19, 4);
+    std::memcpy(&traceId, in + 23, 8);
     h->magic = ntohs(magic);
     h->version = in[2];
     h->flags = in[3];
@@ -133,7 +147,8 @@ inline bool decodeHeader(const char* in, RpcHeader* h) {
     h->methodId = ntohl(methodId);
     h->timeoutMs = ntohl(timeoutMs);
     h->bodyLen = ntohl(bodyLen);
-    h->reserved = in[23];
+    h->traceId = htonll64(traceId);
+    h->reserved = in[31];
     return h->magic == kMagic && h->version == kVersion;
 }
 
