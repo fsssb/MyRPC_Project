@@ -3,6 +3,7 @@
 #include "Logger.h"
 #include "Metrics.h"
 #include "RpcServer.h"
+#include "Scheduler.h"
 
 #include <atomic>
 #include <chrono>
@@ -39,7 +40,15 @@ int main(int argc, char* argv[]) {
     EventLoop mainLoop;
     const std::size_t aiWorkers = static_cast<std::size_t>(threadNum <= 0 ? 8 : threadNum * 4);
     AIService aiService(aiWorkers);
+    // V2.2: run handlers on the M:N coroutine scheduler so a blocking
+    // handler (demo.slow) yields its worker instead of occupying a thread.
+    Scheduler scheduler;
+    scheduler.start(static_cast<std::size_t>(threadNum <= 0 ? 4 : threadNum));
+
     RpcServer server(&mainLoop, "0.0.0.0", port, threadNum);
+    server.setExecutor([&scheduler](std::function<void()> task) {
+        scheduler.spawn(std::move(task));
+    });
     if (argc > 3) {
         const std::size_t maxConcurrency = static_cast<std::size_t>(std::atoi(argv[3]));
         if (maxConcurrency > 0) {
@@ -70,15 +79,13 @@ int main(int argc, char* argv[]) {
         });
     });
 
-    // demo.slow: 2s async task, used to exercise graceful shutdown (in-flight
-    // requests must drain before the process exits).
+    // demo.slow: 2s task that yields its coroutine (does not occupy a worker
+    // thread), used to exercise graceful shutdown draining.
     server.registerMethod("demo", "slow", [](const Value& /*request*/, Value* response,
                                              Router::Done done) {
-        std::thread([response, done]() {
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            *response = Value::makeString("slow-done");
-            done(proto::kOk);
-        }).detach();
+        Scheduler::coSleep(std::chrono::seconds(2));
+        *response = Value::makeString("slow-done");
+        done(proto::kOk);
     });
 
     server.start();
@@ -100,6 +107,7 @@ int main(int argc, char* argv[]) {
              ", io_threads=" + std::to_string(threadNum) +
              ", ai_workers=" + std::to_string(aiWorkers));
     mainLoop.loop();
+    scheduler.stop();
     aiService.stop();
     return 0;
 }
