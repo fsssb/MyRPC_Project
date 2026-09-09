@@ -33,6 +33,9 @@ public:
     TimerId runEvery(std::chrono::milliseconds interval, Functor cb);
     void cancelTimer(TimerId timerId);
 
+    // Number of queued but not yet executed functors (executor queue depth).
+    std::size_t pendingSize() const;
+
     void updateChannel(Channel* channel);
     void removeChannel(Channel* channel);
     bool hasChannel(Channel* channel) const;

@@ -164,6 +164,11 @@ void EventLoop::cancelTimer(TimerId timerId) {
     });
 }
 
+std::size_t EventLoop::pendingSize() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return pendingFunctors_.size();
+}
+
 void EventLoop::updateChannel(Channel* channel) {
     poller_->updateChannel(channel);
 }
