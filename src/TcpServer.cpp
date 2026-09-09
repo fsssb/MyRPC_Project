@@ -79,6 +79,14 @@ void TcpServer::stopAccepting() {
     });
 }
 
+void TcpServer::setWriteHighWaterMark(std::size_t bytes) {
+    highWaterMark_ = bytes;
+}
+
+void TcpServer::setSlowConsumerTimeout(std::chrono::milliseconds timeout) {
+    slowConsumerTimeout_ = timeout;
+}
+
 void TcpServer::setConnectionCallback(ConnectionCallback cb) {
     connectionCallback_ = std::move(cb);
 }
@@ -101,6 +109,8 @@ void TcpServer::newConnection(int sockfd, const sockaddr_in& /*peerAddr*/) {
     const std::string connName = "conn-" + std::to_string(connId);
 
     auto conn = std::make_shared<TcpConnection>(ioLoop, sockfd, connName);
+    conn->setWriteHighWaterMark(highWaterMark_);
+    conn->setSlowConsumerTimeout(slowConsumerTimeout_);
     conn->setConnectionCallback(connectionCallback_ ? connectionCallback_
                                                     : [](const std::shared_ptr<TcpConnection>& connection) {
                                                           LOG_INFO("connection established: " + connection->name());

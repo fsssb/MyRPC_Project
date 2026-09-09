@@ -63,9 +63,9 @@ void TcpConnection::setCloseCallback(CloseCallback cb) {
     closeCallback_ = std::move(cb);
 }
 
-void TcpConnection::send(std::string message) {
+bool TcpConnection::send(std::string message) {
     if (state_ != State::Connected) {
-        return;
+        return false;
     }
 
     auto self = shared_from_this();
@@ -76,10 +76,19 @@ void TcpConnection::send(std::string message) {
             self->sendInLoop(std::move(message));
         });
     }
+    return true;
 }
 
-void TcpConnection::sendMessage(const Message& message) {
-    send(RpcFramer::encode(message));
+bool TcpConnection::sendMessage(const Message& message) {
+    return send(RpcFramer::encode(message));
+}
+
+void TcpConnection::setWriteHighWaterMark(std::size_t bytes) {
+    highWaterMark_ = bytes;
+}
+
+void TcpConnection::setSlowConsumerTimeout(std::chrono::milliseconds timeout) {
+    slowConsumerTimeout_ = timeout;
 }
 
 void TcpConnection::shutdown() {
@@ -193,6 +202,7 @@ void TcpConnection::handleWrite() {
             outputBuffer_->retrieve(static_cast<std::size_t>(n));
             touchActivity();
             if (outputBuffer_->readableBytes() == 0) {
+                highWaterActive_ = false;  // drained below the mark
                 channel_->disableWriting();
                 if (state_ == State::Disconnecting) {
                     shutdownInLoop();
@@ -221,6 +231,7 @@ void TcpConnection::handleWrite() {
         outputBuffer_->retrieve(static_cast<std::size_t>(n));
         touchActivity();
         if (outputBuffer_->readableBytes() == 0) {
+            highWaterActive_ = false;  // drained below the mark
             channel_->disableWriting();
             if (state_ == State::Disconnecting) {
                 shutdownInLoop();
@@ -260,6 +271,7 @@ void TcpConnection::sendInLoop(std::string message) {
             if (written < message.size()) {
                 outputBuffer_->append(message.data() + written, message.size() - written);
                 channel_->enableWriting();
+                checkWriteBackpressureInLoop();  // partial write -> queue built up
             }
             return;
         }
@@ -272,6 +284,32 @@ void TcpConnection::sendInLoop(std::string message) {
 
     outputBuffer_->append(std::move(message));
     channel_->enableWriting();
+    checkWriteBackpressureInLoop();
+}
+
+void TcpConnection::checkWriteBackpressureInLoop() {
+    const std::size_t pending = outputBuffer_->readableBytes();
+    if (highWaterMark_ > 0 && pending > highWaterMark_) {
+        if (!highWaterActive_) {
+            highWaterActive_ = true;
+            // Eviction is timer-driven: once the mark is crossed, re-check
+            // after slowConsumerTimeout (the drain path resets the flag).
+            auto self = shared_from_this();
+            loop_->runAfter(slowConsumerTimeout_, [self]() {
+                if (self->state_ == State::Connected && self->highWaterActive_ &&
+                    self->outputBuffer_->readableBytes() > self->highWaterMark_) {
+                    LOG_ERROR("slow consumer on " + self->name_ + ", pending=" +
+                              std::to_string(self->outputBuffer_->readableBytes()) +
+                              " bytes, closing connection");
+                    self->handleClose();  // evict: frees the output buffer
+                } else {
+                    self->highWaterActive_ = false;
+                }
+            });
+        }
+    } else if (pending == 0) {
+        highWaterActive_ = false;  // drained back below the mark
+    }
 }
 
 void TcpConnection::shutdownInLoop() {

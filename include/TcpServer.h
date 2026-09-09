@@ -38,6 +38,10 @@ public:
     void submitTask(ThreadPool::Task task);
     std::size_t pendingTaskSize() const;
 
+    // Write backpressure applied to every new connection (see TcpConnection).
+    void setWriteHighWaterMark(std::size_t bytes);
+    void setSlowConsumerTimeout(std::chrono::milliseconds timeout);
+
 private:
     void newConnection(int sockfd, const sockaddr_in& peerAddr);
     void removeConnection(const std::shared_ptr<TcpConnection>& conn);
@@ -57,6 +61,8 @@ private:
     EventLoop::TimerId idleCheckTimerId_{0};
     const std::chrono::seconds idleTimeout_{30};
     std::atomic<bool> stopping_{false};
+    std::size_t highWaterMark_{4 * 1024 * 1024};
+    std::chrono::milliseconds slowConsumerTimeout_{5000};
 };
 
 #endif  // MYRPCPROJECT_INCLUDE_TCPSERVER_H_

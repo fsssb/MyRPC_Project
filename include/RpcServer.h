@@ -56,6 +56,12 @@ public:
     // onDone is invoked when shutdown completes.
     void stopGracefully(std::chrono::milliseconds timeout, std::function<void()> onDone = {});
 
+    // Write backpressure forwarded to the underlying TcpServer.
+    void setWriteHighWaterMark(std::size_t bytes) { tcpServer_.setWriteHighWaterMark(bytes); }
+    void setSlowConsumerTimeout(std::chrono::milliseconds timeout) {
+        tcpServer_.setSlowConsumerTimeout(timeout);
+    }
+
     // Backlog of the executor task queue (V1 limitation: always 0 until V2.2).
     std::size_t pendingTaskSize() const;
 

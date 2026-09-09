@@ -55,6 +55,13 @@ int main(int argc, char* argv[]) {
             server.setMaxConcurrency(maxConcurrency);
         }
     }
+    if (argc > 4) {
+        const std::size_t highWaterKB = static_cast<std::size_t>(std::atoi(argv[4]));
+        if (highWaterKB > 0) {
+            server.setWriteHighWaterMark(highWaterKB * 1024);
+            server.setSlowConsumerTimeout(std::chrono::milliseconds(500));
+        }
+    }
 
     // demo.echo: reply with the exact request struct.
     server.registerMethod("demo", "echo", [](const Value& request, Value* response,
