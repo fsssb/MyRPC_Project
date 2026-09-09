@@ -87,7 +87,11 @@ void ThreadPool::submit(Task task) {
     });
 }
 
-std::size_t ThreadPool::pendingTaskSize() const { return 0; }
+std::size_t ThreadPool::pendingTaskSize() const {
+    // Tasks are dispatched through the base loop's pending functors; report
+    // the real queue depth instead of the old placeholder 0.
+    return baseLoop_->pendingSize();
+}
 
 void ThreadPool::threadFunc(int index) {
     auto loop = std::make_unique<EventLoop>();

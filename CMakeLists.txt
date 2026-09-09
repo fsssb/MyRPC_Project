@@ -24,6 +24,8 @@ set(RPC_CORE_SOURCES
     src/CircuitBreaker.cpp
     src/LocalRegistry.cpp
     src/Tracing.cpp
+    src/Histogram.cpp
+    src/MetricsServer.cpp
     src/Scheduler.cpp
     src/AIService.cpp
     src/TaskCoordinator.cpp
