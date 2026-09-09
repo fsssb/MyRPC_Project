@@ -161,6 +161,9 @@ void RpcServer::handleRequest(const std::shared_ptr<TcpConnection>& conn, const 
                 tracing::recordSpan(
                     {ctx->traceId, ctx->header.methodId, ctx->methodName.c_str(),
                      static_cast<uint16_t>(status), latencyMs.count(), "server"});
+                Metrics::instance().observeLatency(
+                    static_cast<double>(latencyMs.count()));
+                Metrics::instance().observeStatus(static_cast<uint16_t>(status));
                 server->releaseSlot();
                 if (!reply) {
                     return;  // oneway calls never receive a response
