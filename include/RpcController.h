@@ -21,6 +21,12 @@ public:
         methodId_ = proto::methodIdOf(methodKey_.c_str());
     }
 
+    // Set the full "service.method" key directly.
+    void setMethodKey(const std::string& key) {
+        methodKey_ = key;
+        methodId_ = proto::methodIdOf(key.c_str());
+    }
+
     // Total RPC timeout in milliseconds; 0 means no deadline (not recommended).
     void setTimeoutMs(uint32_t ms) { timeoutMs_ = ms; }
 

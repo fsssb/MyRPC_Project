@@ -3,12 +3,14 @@
 #include "Logger.h"
 #include "Metrics.h"
 #include "MetricsServer.h"
+#include "RegistryClient.h"
 #include "RpcServer.h"
 #include "Scheduler.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <random>
 #include <cstdlib>
 #include <csignal>
 #include <string>
@@ -120,7 +122,39 @@ int main(int argc, char* argv[]) {
     LOG_INFO("RPC server started on 0.0.0.0:" + std::to_string(port) +
              ", io_threads=" + std::to_string(threadNum) +
              ", ai_workers=" + std::to_string(aiWorkers));
+
+    // Optional: register this instance with a cross-process registry
+    // (argv[6]=registry host argv[7]=registry port argv[8]=service name).
+    std::unique_ptr<RegistryClient> registryClient;
+    std::atomic<bool> renewing{false};
+    uint64_t instanceId = 0;
+    std::string serviceName = "demo";
+    if (argc > 7) {
+        serviceName = argc > 8 ? argv[8] : "demo";
+        instanceId = static_cast<uint64_t>(
+            std::chrono::system_clock::now().time_since_epoch().count() & 0xFFFFFF) +
+                     static_cast<uint64_t>(std::random_device{}() & 0xFF);
+        registryClient = std::make_unique<RegistryClient>(argv[6],
+                                                          static_cast<uint16_t>(std::atoi(argv[7])));
+        registryClient->registerService({serviceName, "127.0.0.1", port, instanceId}, 10000);
+        renewing.store(true);
+        std::thread([&]() {
+            while (renewing.load()) {
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+                if (registryClient) {
+                    registryClient->renewLease(serviceName, instanceId);
+                }
+            }
+        }).detach();
+        LOG_INFO("registered to registry " + std::string(argv[6]) + ":" + argv[7]);
+    }
+
     mainLoop.loop();
+    if (registryClient) {
+        renewing.store(false);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        registryClient->unregister(serviceName, instanceId);  // graceful removal
+    }
     scheduler.stop();
     aiService.stop();
     return 0;
